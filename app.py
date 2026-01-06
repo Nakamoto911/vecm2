@@ -349,8 +349,10 @@ def load_fred_md_data_safe(file_path: str = '2025-11-MD.csv') -> pd.DataFrame:
         # Capacity is usually a percentage, keep as level or divide by 100? 
         # FRED code is 1 or 2 usually. We keep as is.
         
-        # Final cleaning for stability
+        # Final cleaning for stability with aggressive clipping
+        # Macro data should typically not exceed these bounds (e.g. log levels or growth rates)
         data = data.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        data = data.clip(lower=-1e9, upper=1e9)
         return data
         
     except Exception as e:
@@ -587,8 +589,11 @@ class AdaptiveElasticNetVECM:
         
     def compute_time_weights(self, n: int) -> np.ndarray:
         """Compute exponential decay weights."""
-        weights = np.array([self.decay ** i for i in range(n-1, -1, -1)])
-        return weights / weights.sum()
+        decay_vals = np.array([self.decay ** i for i in range(n-1, -1, -1)])
+        sum_decay = decay_vals.sum()
+        if sum_decay == 0:
+            return np.ones(n) / n
+        return decay_vals / sum_decay
     
     def estimate_cointegration(self, levels: pd.DataFrame, n_lags: int = 4) -> dict:
         """Estimate cointegration relationships (simplified Johansen-style)."""
@@ -605,12 +610,14 @@ class AdaptiveElasticNetVECM:
         rank = sum(1 for t, c in zip(trace_stats, critical_values) if t > c)
         self.cointegration_rank = max(1, rank)
         
-        # Generate cointegration vectors
-        self.beta = np.random.randn(n_vars, self.cointegration_rank) * 0.1
+        # Generate cointegration vectors with bounded initial values
+        self.beta = np.random.randn(n_vars, self.cointegration_rank) * 0.01
         # Add safety for normalization
         norms = np.linalg.norm(self.beta, axis=0)
-        norms[norms == 0] = 1.0
+        norms = np.where(norms == 0, 1.0, norms)
         self.beta = self.beta / norms
+        # Ensure beta itself is bounded
+        self.beta = np.clip(self.beta, -10, 10)
         
         return {
             'rank': self.cointegration_rank,
@@ -629,9 +636,21 @@ class AdaptiveElasticNetVECM:
         selected_cols = levels.columns[:n_vars]
         
         try:
-            # Ruggedized matmul with nan_to_num
-            vals = np.nan_to_num(levels[selected_cols].values, nan=0.0, posinf=0.0, neginf=0.0)
-            ect = vals @ self.beta[:n_vars, 0]
+            # Ruggedized matmul with exhaustive numerical safety
+            if len(selected_cols) == 0 or self.beta is None:
+                self.ect = pd.Series(0, index=levels.index, name='ECT')
+                return self.ect
+
+            # Ensure data is numeric and clean
+            vals = np.nan_to_num(levels[selected_cols].values, nan=0.0, posinf=1e9, neginf=-1e9).astype(np.float64)
+            beta_v = np.nan_to_num(self.beta[:n_vars, 0], nan=0.0, posinf=10.0, neginf=-10.0).astype(np.float64)
+            
+            # Use explicit dot product and suppress runtime warnings for this specific operation
+            # as intermediate results may temporarily overflow before being clipped
+            with np.errstate(all='ignore'):
+                ect = np.dot(vals, beta_v)
+                ect = np.nan_to_num(ect, nan=0.0, posinf=1e12, neginf=-1e12)
+            
             self.ect = pd.Series(ect, index=levels.index, name='ECT')
         except Exception:
             self.ect = pd.Series(0, index=levels.index, name='ECT')
@@ -1249,7 +1268,7 @@ def main():
     st.markdown("<div style='height: 1rem'></div>", unsafe_allow_html=True)
     
     # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["ALLOCATION", "MACRO REGIME", "MODEL DIAGNOSTICS", "ALGORITHM STEPS"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["ALLOCATION", "MACRO REGIME", "MODEL DIAGNOSTICS", "ALGORITHM STEPS", "AUDIT"])
     
     with tab1:
         col_left, col_right = st.columns([1, 2])
@@ -1354,7 +1373,7 @@ def main():
             if 'FEDFUNDS' in feature_name: return 'Rates'
             if 'BAA_AAA' in feature_name: return 'Credit Risk'
             return 'Macro'
-
+        
         for asset in asset_gamma.index:
             row = asset_gamma.loc[asset]
             # Select top 5 features by absolute magnitude
@@ -1487,6 +1506,41 @@ def main():
         
         orders_df = pd.DataFrame(orders_data)
         st.dataframe(orders_df, hide_index=True, width='stretch')
+
+    with tab5:
+        st.markdown('<div class="panel-header">MACRO INDICATORS DATA (FRED-MD)</div>', unsafe_allow_html=True)
+        st.dataframe(
+            macro_data,
+            use_container_width=True,
+            height=400
+        )
+        
+        st.markdown('<div class="panel-header">ASSET DATA (YFINANCE)</div>', unsafe_allow_html=True)
+        
+        col_assets_left, col_assets_right = st.columns(2)
+        
+        with col_assets_left:
+            st.markdown('<div style="font-family: \'IBM Plex Mono\'; font-size: 0.8rem; color: #888; margin-bottom: 0.5rem;">HISTORICAL PRICES</div>', unsafe_allow_html=True)
+            st.dataframe(
+                asset_prices,
+                use_container_width=True,
+                height=300
+            )
+            
+        with col_assets_right:
+            st.markdown('<div style="font-family: \'IBM Plex Mono\'; font-size: 0.8rem; color: #888; margin-bottom: 0.5rem;">LOG RETURNS</div>', unsafe_allow_html=True)
+            st.dataframe(
+                asset_returns,
+                use_container_width=True,
+                height=300
+            )
+        
+        st.markdown('<div class="panel-header">KERNEL FEATURES (TRANSFORMED)</div>', unsafe_allow_html=True)
+        st.dataframe(
+            kernel_features,
+            use_container_width=True,
+            height=400
+        )
     
     # Footer
     st.markdown("""
