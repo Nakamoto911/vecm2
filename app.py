@@ -1518,7 +1518,7 @@ def main():
                 sign = "+" if coef >= 0 else "-"
                 val = abs(coef)
                 
-                term = fr"\underbrace{{{val:.2f} \cdot \text{{{fname}}}}}_{{\text{{{annotation}}}}}"
+                term = fr"\underbrace{{{val:.4f} \cdot \text{{{fname}}}}}_{{\text{{{annotation}}}}}"
                 terms_latex.append((sign, term))
             
             if not terms_latex:
