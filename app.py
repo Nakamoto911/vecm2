@@ -20,6 +20,19 @@ from sklearn.preprocessing import StandardScaler
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
 import pandas_datareader.data as web
 
+# NBER Recession Dates (approximate for FRED-MD plotting)
+NBER_RECESSIONS = [
+    ('1960-04-01', '1961-02-01'),
+    ('1969-12-01', '1970-11-01'),
+    ('1973-11-01', '1975-03-01'),
+    ('1980-01-01', '1980-07-01'),
+    ('1981-07-01', '1982-11-01'),
+    ('1990-07-01', '1991-03-01'),
+    ('2001-03-01', '2001-11-01'),
+    ('2007-12-01', '2009-06-01'),
+    ('2020-02-01', '2020-04-01')
+]
+
 # Page configuration
 st.set_page_config(
     page_title="VECM Strategic Allocation",
@@ -364,6 +377,78 @@ def load_fred_md_data_safe(file_path: str = '2025-11-MD.csv') -> pd.DataFrame:
         st.error(f"Error loading FRED-MD data: {e}")
         # Fallback for resiliency if file missing during dev
         return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
+def load_full_fred_md_raw(file_path: str = '2025-11-MD.csv') -> tuple[pd.DataFrame, pd.Series]:
+    """Load the complete raw FRED-MD dataset and its transformation codes."""
+    try:
+        df_raw = pd.read_csv(file_path)
+        transform_codes = df_raw.iloc[0]
+        df = df_raw.iloc[1:].copy()
+        df['sasdate'] = pd.to_datetime(df['sasdate'], utc=True).dt.tz_localize(None)
+        df = df.set_index('sasdate')
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df, transform_codes
+    except Exception as e:
+        st.error(f"Error loading full FRED-MD raw data: {e}")
+        return pd.DataFrame(), pd.Series()
+
+
+@st.cache_data(ttl=3600)
+def load_fred_appendix(file_path: str = 'FRED-MD_updated_appendix.csv') -> pd.DataFrame:
+    """Load FRED-MD appendix for series names and groupings."""
+    try:
+        # Try different encodings for robustness
+        for enc in ['utf-8', 'latin1', 'cp1252']:
+            try:
+                df = pd.read_csv(file_path, encoding=enc)
+                if 'fred' in df.columns:
+                    # Normalize index to uppercase for robust matching
+                    df['fred'] = df['fred'].str.upper()
+                    df = df.set_index('fred')
+                return df
+            except UnicodeDecodeError:
+                continue
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading FRED appendix: {e}")
+        return pd.DataFrame()
+
+
+def apply_transformation(series: pd.Series, tcode: int) -> pd.Series:
+    """Apply McCracken & Ng (2016) transformations."""
+    if tcode == 1:
+        return series
+    elif tcode == 2:
+        return series.diff()
+    elif tcode == 3:
+        return series.diff().diff()
+    elif tcode == 4:
+        return np.log(series.replace(0, np.nan)).ffill()
+    elif tcode == 5:
+        return np.log(series.replace(0, np.nan)).diff().fillna(0)
+    elif tcode == 6:
+        return np.log(series.replace(0, np.nan)).diff().diff().fillna(0)
+    elif tcode == 7:
+        return series.pct_change().diff()
+    else:
+        return series
+
+
+def get_transformation_label(tcode: int) -> str:
+    """Get human-readable label for transformation code."""
+    labels = {
+        1: "Level (no change)",
+        2: "Change: x(t) - x(t-1)",
+        3: "Double Change",
+        4: "Log: log(x(t))",
+        5: "Log Change",
+        6: "Double Log Change",
+        7: "Change in % Change"
+    }
+    return labels.get(int(tcode), "Unknown")
 
 
 
@@ -1122,6 +1207,57 @@ def plot_asset_performance(prices: pd.DataFrame, weights_history: list = None) -
     return fig
 
 
+def plot_fred_series(data: pd.Series, title: str, subtitle: str, is_transformed: bool = False) -> go.Figure:
+    """Create a detailed plot for a FRED-MD series with stats and recession bands."""
+    theme = create_plotly_theme()
+    color = '#ff4757' if is_transformed else '#4da6ff'
+    
+    # Calculate statistics
+    stats = {
+        'Mean': data.mean(),
+        'Std': data.std(),
+        'Q1': data.quantile(0.25),
+        'Med': data.median(),
+        'Q3': data.quantile(0.75)
+    }
+    stats_str = ", ".join([f"{k}: {v:.2e}" if abs(v) < 0.01 and v != 0 else f"{k}: {v:.2f}" for k, v in stats.items()])
+    
+    fig = go.Figure()
+    
+    # Add Recession Bands
+    for start, end in NBER_RECESSIONS:
+        if pd.to_datetime(start) <= data.index[-1] and pd.to_datetime(end) >= data.index[0]:
+            fig.add_vrect(
+                x0=start, x1=end,
+                fillcolor="#ffffff", opacity=0.07,
+                layer="below", line_width=0
+            )
+            
+    fig.add_trace(go.Scatter(
+        x=data.index,
+        y=data.values,
+        mode='lines',
+        line=dict(color=color, width=1.3),
+        hovertemplate='%{x|%b %Y}<br>Value: %{y:.4f}<extra></extra>'
+    ))
+    
+    fig.update_layout(
+        title=dict(
+            text=f"<b>{title}</b><br><span style='font-size: 10px; color: #888;'>{subtitle}</span><br><span style='font-size: 9px; color: #555;'>{stats_str}</span>",
+            font=dict(family='IBM Plex Mono', size=13, color='#e8e8e8'),
+            x=0.05, y=0.92
+        ),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=40, r=20, t=75, b=40),
+        height=280,
+        xaxis=dict(**theme['xaxis']),
+        yaxis=dict(**theme['yaxis'])
+    )
+    
+    return fig
+
+
 def plot_regime_timeline(macro_data: pd.DataFrame, regime_history: pd.DataFrame = None) -> go.Figure:
     """Create regime detection timeline."""
     theme = create_plotly_theme()
@@ -1396,7 +1532,7 @@ def main():
     st.markdown("<div style='height: 1rem'></div>", unsafe_allow_html=True)
     
     # Main content tabs
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["ALLOCATION", "MACRO REGIME", "MODEL DIAGNOSTICS", "ALGORITHM STEPS", "AUDIT", "SPECS"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["ALLOCATION", "MACRO REGIME", "SERIES", "MODEL DIAGNOSTICS", "ALGORITHM STEPS", "AUDIT", "SPECS"])
     
     with tab1:
         col_left, col_right = st.columns([1, 2])
@@ -1486,8 +1622,92 @@ def main():
                 'Interpretation': st.column_config.TextColumn('Strategic Interpretation', width='large')
             }
         )
-    
+
     with tab3:
+        # Load raw data and appendix
+        df_full, transform_codes = load_full_fred_md_raw()
+        appendix = load_fred_appendix()
+        
+        if not df_full.empty:
+            # Group definitions from appendix
+            group_names = {
+                1: "Output and Income",
+                2: "Labor Market",
+                3: "Housing",
+                4: "Consumption, Orders and Inventories",
+                5: "Money and Credit",
+                6: "Interest Rates and Exchange Rates",
+                7: "Prices",
+                8: "Stock Market"
+            }
+            
+            # Map columns to groups (Case-Insensitive)
+            columns_by_group = {}
+            for col in df_full.columns:
+                group_id = 0
+                col_upper = col.upper()
+                if col_upper in appendix.index:
+                    try:
+                        group_id = int(appendix.loc[col_upper, 'group'])
+                    except:
+                        pass
+                
+                if group_id not in columns_by_group:
+                    columns_by_group[group_id] = []
+                columns_by_group[group_id].append(col)
+                
+            sorted_groups = sorted(columns_by_group.keys())
+            
+            for g_id in sorted_groups:
+                # Standard FRED-MD groups are 1-8. Group 0 is for anything uncategorized.
+                if g_id == 0:
+                    # If Group 0 exists, it's likely variables not in the appendix.
+                    # We only show it if it's not empty and if the user didn't explicitly ask to hide it.
+                    # However, based on user feedback, we'll label it as "UNCATEGORIZED" 
+                    # OR simply skip it if it's just noise.
+                    g_name = "Uncategorized / Miscellaneous"
+                    # Skip if it's empty or only contains known index-like cols
+                    if not columns_by_group[g_id]:
+                        continue
+                else:
+                    g_name = group_names.get(g_id, f"Group {g_id}")
+                
+                st.markdown(f'<div class="panel-header" style="font-size: 1rem; color: #ff6b35; border-bottom: 1px solid #2a2a2a; margin: 1.5rem 0 1rem 0;">GROUP {g_id}: {g_name.upper()}</div>', unsafe_allow_html=True)
+                
+                for col in columns_by_group[g_id]:
+                    # Get description from appendix (Case-Insensitive)
+                    desc = col
+                    col_upper = col.upper()
+                    if col_upper in appendix.index:
+                        series_info = appendix.loc[col_upper]
+                        desc_str = series_info['description'] if isinstance(series_info, pd.Series) else series_info.iloc[0]['description']
+                        desc = f"{col}: {desc_str}"
+                    
+                    with st.expander(desc):
+                        tcode = 1
+                        if col in transform_codes:
+                            try:
+                                tcode = int(transform_codes[col])
+                            except:
+                                pass
+                        
+                        raw_data = df_full[col].dropna()
+                        trans_data = apply_transformation(raw_data, tcode).dropna()
+                        
+                        st.plotly_chart(
+                            plot_fred_series(raw_data, f"RAW: {col}", "LEVEL DATA", is_transformed=False),
+                            use_container_width=True, config={'displayModeBar': False}
+                        )
+                    
+                        t_label = get_transformation_label(tcode)
+                        st.plotly_chart(
+                            plot_fred_series(trans_data, f"TRANSFORMED: {col}", f"TCODE {tcode}: {t_label}", is_transformed=True),
+                            use_container_width=True, config={'displayModeBar': False}
+                        )
+        else:
+            st.warning("Could not load full FRED-MD dataset.")
+    
+    with tab4:
         st.markdown('<div class="panel-header">ASSET EQUATIONS</div>', unsafe_allow_html=True)
         
         # Definition mapping for annotations
@@ -1584,7 +1804,7 @@ def main():
         
         # We removed the generic equation list in favor of the asset specific ones above
     
-    with tab4:
+    with tab5:
         st.markdown("""
         <div style="font-family: 'IBM Plex Mono'; font-size: 0.85rem; color: #888; line-height: 1.8;">
         """, unsafe_allow_html=True)
@@ -1637,7 +1857,7 @@ def main():
         orders_df = pd.DataFrame(orders_data)
         st.dataframe(orders_df, hide_index=True, width='stretch')
 
-    with tab5:
+    with tab6:
         st.markdown('<div class="panel-header">MACRO INDICATORS DATA (FRED-MD)</div>', unsafe_allow_html=True)
         st.dataframe(
             macro_data,
@@ -1672,7 +1892,7 @@ def main():
             height=400
         )
 
-    with tab6:
+    with tab7:
         try:
             with open('specs.md', 'r') as f:
                 specs_content = f.read()
