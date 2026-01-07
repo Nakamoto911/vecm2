@@ -1624,9 +1624,32 @@ def main():
         )
 
     with tab3:
+        # Filter toggle
+        filter_choice = st.radio(
+            "Filter Series by Asset Equation Influence:",
+            options=["ALL", "EQUITY", "BONDS", "GOLD"],
+            horizontal=True,
+            index=0,
+            help="Show all series or only those with non-zero predictive power for the selected asset in this specific VECM estimation."
+        )
+
         # Load raw data and appendix
         df_full, transform_codes = load_full_fred_md_raw()
         appendix = load_fred_appendix()
+        
+        active_series = set()
+        if filter_choice != "ALL":
+            # Extract active features for the chosen asset from the estimated gamma matrix
+            asset_row = asset_gamma.loc[filter_choice]
+            # Consider features with non-zero coefficients
+            active_features = asset_row[asset_row != 0].index
+            
+            # Map features (e.g., 'PAYEMS_L1') back to original series names ('PAYEMS')
+            for feat in active_features:
+                for col in df_full.columns:
+                    if feat.startswith(col + "_"):
+                        active_series.add(col)
+                        break
         
         if not df_full.empty:
             # Group definitions from appendix
@@ -1659,22 +1682,23 @@ def main():
             sorted_groups = sorted(columns_by_group.keys())
             
             for g_id in sorted_groups:
+                # Filter columns in this group based on asset selection
+                group_cols = columns_by_group[g_id]
+                if filter_choice != "ALL":
+                    group_cols = [c for c in group_cols if c in active_series]
+                
+                if not group_cols:
+                    continue
+
                 # Standard FRED-MD groups are 1-8. Group 0 is for anything uncategorized.
                 if g_id == 0:
-                    # If Group 0 exists, it's likely variables not in the appendix.
-                    # We only show it if it's not empty and if the user didn't explicitly ask to hide it.
-                    # However, based on user feedback, we'll label it as "UNCATEGORIZED" 
-                    # OR simply skip it if it's just noise.
                     g_name = "Uncategorized / Miscellaneous"
-                    # Skip if it's empty or only contains known index-like cols
-                    if not columns_by_group[g_id]:
-                        continue
                 else:
                     g_name = group_names.get(g_id, f"Group {g_id}")
                 
                 st.markdown(f'<div class="panel-header" style="font-size: 1rem; color: #ff6b35; border-bottom: 1px solid #2a2a2a; margin: 1.5rem 0 1rem 0;">GROUP {g_id}: {g_name.upper()}</div>', unsafe_allow_html=True)
                 
-                for col in columns_by_group[g_id]:
+                for col in group_cols:
                     # Get description from appendix (Case-Insensitive)
                     desc = col
                     col_upper = col.upper()
