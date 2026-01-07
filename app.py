@@ -18,6 +18,7 @@ from yahooquery import Ticker
 from sklearn.linear_model import ElasticNet
 from sklearn.preprocessing import StandardScaler
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
+import pandas_datareader.data as web
 
 # Page configuration
 st.set_page_config(
@@ -354,7 +355,7 @@ def load_fred_md_data_safe(file_path: str = '2025-11-MD.csv') -> pd.DataFrame:
         
         # Final cleaning for stability with aggressive clipping
         # Macro data should typically not exceed these bounds (e.g. log levels or growth rates)
-        data = data.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        data = data.replace([np.inf, -np.inf], np.nan).dropna()
         data = data.clip(lower=-1e9, upper=1e9)
         return data
         
@@ -367,44 +368,134 @@ def load_fred_md_data_safe(file_path: str = '2025-11-MD.csv') -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600)
-def get_real_asset_prices(start_date: str = '2004-12-01') -> pd.DataFrame:
-    """Fetch real historical asset price data from Yahoo Finance."""
-    tickers = {
-        'EQUITY': 'SPY',
-        'BONDS': 'TLT',
-        'GOLD': 'GLD'
-    }
-    
-    t = Ticker(list(tickers.values()))
-    
-    # Fetch history since start_date. FRED-MD usually goes back far, 
-    # but TLT/GLD started in the early 2000s.
-    df_history = t.history(start=start_date, interval='1mo')
-    
-    if isinstance(df_history, dict):
-        # Handle cases where yahooquery might return a dict of dfs
-        all_dfs = []
-        for symbol, df in df_history.items():
-                # Ensure each ticker's index is naive and consistent
-                df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
-                df['symbol'] = symbol
-                all_dfs.append(df)
-        df_history = pd.concat(all_dfs)
+def get_long_history_assets(start_date: str = '1960-01-01') -> pd.DataFrame:
+    """
+    Constructs a long history (since 1960) by blending FRED data with recent ETFs.
+    """
+    # --- 1. EQUITIES (EQUITY) ---
+    # Draw from FRED-MD directly for long history as it includes S&P 500 since 1959.
+    # This avoids truncations sometimes found in free APIs.
+    equity_ret = pd.Series(dtype=float)
+    try:
+        # Load macro data to extract S&P 500
+        df_macro_raw = pd.read_csv('2025-11-MD.csv').iloc[1:]
+        df_macro_raw['sasdate'] = pd.to_datetime(df_macro_raw['sasdate'], utc=True).dt.tz_localize(None)
+        df_macro_raw.set_index('sasdate', inplace=True)
+        
+        if 'S&P 500' in df_macro_raw.columns:
+            equity_data = pd.to_numeric(df_macro_raw['S&P 500'], errors='coerce').dropna()
+            equity_ret = np.log(equity_data).diff().dropna()
+        else:
+            # Fallback to yahooquery if column missing
+            equity_ticker = '^GSPC'
+            h = Ticker(equity_ticker).history(period='max', interval='1mo')
+            if not h.empty:
+                equity_data = h['adjclose']
+                if isinstance(equity_data.index, pd.MultiIndex):
+                    equity_data.index = equity_data.index.get_level_values('date')
+                equity_data.index = pd.to_datetime(equity_data.index, utc=True).tz_localize(None)
+                equity_ret = np.log(equity_data).diff().dropna()
+    except Exception as e:
+        st.error(f"Error fetching Equity data: {e}")
 
-    # Pivot to get symbols as columns
-    df_prices = df_history.reset_index().pivot(index='date', columns='symbol', values='adjclose')
+    # --- 2. GOLD (GOLD) ---
+    # Construction: Splicing Precious Metals PPI (1960) + Import Index (1993) + GLD (2004)
+    gold_final_ret = pd.Series(dtype=float)
     
-    # Map symbols back to our names
-    inv_tickers = {v: k for k, v in tickers.items()}
-    df_prices = df_prices.rename(columns=inv_tickers)
+    try:
+        # A. PPI Precious Metals (WPU1022) - Starts 1960
+        gold_ppi = web.DataReader('WPU1022', 'fred', start_date)
+        gold_ppi.index = pd.to_datetime(gold_ppi.index, utc=True).tz_localize(None)
+        gold_ppi = gold_ppi.resample('MS').last()
+        gold_ppi_ret = np.log(gold_ppi).diff().dropna()['WPU1022']
+        gold_final_ret = gold_ppi_ret.copy()
+        
+        # B. Gold Import Price Index (IR14270) - Starts 1992
+        try:
+            gold_import = web.DataReader('IR14270', 'fred', '1990-01-01')
+            gold_import.index = pd.to_datetime(gold_import.index, utc=True).tz_localize(None)
+            gold_import = gold_import.resample('MS').last()
+            gold_import_ret = np.log(gold_import).diff().dropna()['IR14270']
+            
+            # Splice IR14270 over PPI where available (usually more accurate for gold specifically)
+            if not gold_import_ret.empty:
+                common_idx = gold_final_ret.index.intersection(gold_import_ret.index)
+                gold_final_ret.loc[common_idx] = gold_import_ret.loc[common_idx]
+                new_idx = gold_import_ret.index.difference(gold_final_ret.index)
+                gold_final_ret = pd.concat([gold_final_ret, gold_import_ret.loc[new_idx]]).sort_index()
+        except:
+            pass # Fall back to PPI if Import Index fails
+
+        # C. GLD ETF - Recent period
+        gld_ticker = 'GLD'
+        gld_data = Ticker(gld_ticker).history(period='max', interval='1mo')['adjclose']
+        if isinstance(gld_data.index, pd.MultiIndex):
+            gld_data.index = gld_data.index.get_level_values('date')
+        gld_data.index = pd.to_datetime(gld_data.index, utc=True).tz_localize(None)
+        gld_ret = np.log(gld_data).diff().dropna()
+        
+        if not gld_ret.empty:
+            common_idx = gold_final_ret.index.intersection(gld_ret.index)
+            gold_final_ret.loc[common_idx] = gld_ret.loc[common_idx]
+            new_idx = gld_ret.index.difference(gold_final_ret.index)
+            gold_final_ret = pd.concat([gold_final_ret, gld_ret.loc[new_idx]]).sort_index()
+            
+    except Exception as e:
+        st.error(f"Critical error constructing Gold history: {e}")
+        # Final fallback: return empty if everything fails
+
+    # --- 3. BONDS (BONDS) - "Total Return" Method ---
+    # Before: TLT (2002). Now: Synthetic 10Y Yield (GS10) + IEF.
     
-    # Keep only target columns and drop NaNs
-    df_prices = df_prices[list(tickers.keys())].dropna()
+    # A. Fetch Recent ETF (IEF = Treasury 7-10 Year)
+    ief_ticker = 'IEF'
+    ief_data = Ticker(ief_ticker).history(period='max', interval='1mo')['adjclose']
+    if isinstance(ief_data.index, pd.MultiIndex):
+        ief_data.index = ief_data.index.get_level_values('date')
+    ief_data.index = pd.to_datetime(ief_data.index, utc=True).tz_localize(None)
+    ief_ret = np.log(ief_data).diff().dropna()
     
-    # Final safety: Ensure index is datetime and localized/unlocalized consistently
-    df_prices.index = pd.to_datetime(df_prices.index, utc=True).tz_localize(None)
+    # B. Construct Synthetic History via FRED (GS10)
+    bond_combined_ret = pd.Series(dtype=float)
+    try:
+        gs10 = web.DataReader('GS10', 'fred', start_date)
+        gs10.index = pd.to_datetime(gs10.index, utc=True).tz_localize(None)
+        yields = gs10['GS10'] / 100  # Convert to decimal
+        
+        # Approximation formula for Monthly Total Return:
+        # Return = Carry (Coupon/12) + Price Change (-Duration * DeltaYield)
+        duration = 7.5  # Standard average duration for 10Y Treasuries
+        carry = yields.shift(1) / 12
+        price_change = -duration * (yields - yields.shift(1))
+        
+        synth_simple_ret = carry + price_change
+        synth_log_ret = np.log(1 + synth_simple_ret).dropna()
+        bond_combined_ret = synth_log_ret.copy()
+    except Exception as e:
+        st.warning(f"Could not fetch historical Bond data (GS10) from FRED: {e}")
+
+    # C. Splicing
+    if not ief_ret.empty:
+        cutoff_date = ief_ret.index[0]
+        # Keep synthetic before ETF start, and ETF after
+        bond_final_ret = pd.concat([
+            bond_combined_ret[bond_combined_ret.index < cutoff_date],
+            ief_ret
+        ])
+    else:
+        bond_final_ret = bond_combined_ret
+
+    # --- 4. MERGE AND RECONSTRUCT PRICES ---
+    # Create a single aligned DataFrame
+    all_ret = pd.DataFrame({
+        'EQUITY': equity_ret,
+        'GOLD': gold_final_ret,
+        'BONDS': bond_final_ret
+    }).dropna()
     
-    # Rename index to 'date' for consistency if needed (already 'date' from reset_index)
+    # Reconstruct Base 100 Price Indices for display/VECM
+    # Price_t = 100 * exp(cumulative sum of log returns)
+    df_prices = 100 * np.exp(all_ret.cumsum())
     df_prices.index.name = 'date'
     
     return df_prices
@@ -582,7 +673,7 @@ class RegimeSentinel:
 class AdaptiveElasticNetVECM:
     """Adaptive Sparse VECM with Elastic Net regularization."""
     
-    def __init__(self, l1_ratio: float = 0.3, alpha: float = 0.1, decay: float = 0.98):
+    def __init__(self, l1_ratio: float = 0.3, alpha: float = 0.005, decay: float = 0.98):
         self.l1_ratio = l1_ratio  # Ridge-heavy for stability
         self.alpha = alpha
         self.decay = decay  # Exponential time weighting
@@ -590,6 +681,7 @@ class AdaptiveElasticNetVECM:
         self.cointegration_vars = None
         self.beta = None
         self.gamma = None
+        self.intercepts = None
         self.ect = None
         
     def compute_time_weights(self, n: int) -> np.ndarray:
@@ -676,7 +768,7 @@ class AdaptiveElasticNetVECM:
         model = ElasticNet(
             l1_ratio=self.l1_ratio, 
             alpha=self.alpha, 
-            fit_intercept=False,
+            fit_intercept=True,
             max_iter=5000,
             tol=1e-3
         )
@@ -697,6 +789,7 @@ class AdaptiveElasticNetVECM:
             index=changes.columns,
             columns=kernel_features.columns
         )
+        self.intercepts = pd.Series(model.intercept_, index=changes.columns)
         return self.gamma
 
 
@@ -1152,10 +1245,10 @@ def main():
         
         alpha = st.slider(
             "Regularization Strength (α)",
-            min_value=0.01,
+            min_value=0.001,
             max_value=0.5,
-            value=0.1,
-            step=0.01,
+            value=0.005,
+            step=0.001,
             help="Overall penalty strength."
         )
         
@@ -1181,11 +1274,16 @@ def main():
         
         st.markdown("##### Data Settings")
         
-        n_periods = st.selectbox(
-            "History (months)",
-            options=[60, 90, 120, 180, 240],
-            index=2
+        n_periods_label = st.selectbox(
+            "Visual History",
+            options=["60m", "120m", "240m", "480m", "Full"],
+            index=1,
+            help="Select the time window for dashboard charts. The model always trains on the full common history."
         )
+        
+        # Map labels to numeric months
+        n_periods_map = {"60m": 60, "120m": 120, "240m": 240, "480m": 480, "Full": 10000}
+        n_periods = n_periods_map[n_periods_label]
         
         run_model = st.button("⟳ RUN MODEL", width='stretch')
     
@@ -1196,7 +1294,18 @@ def main():
     if not macro_data.empty:
         macro_data = macro_data.replace([np.inf, -np.inf], np.nan).fillna(0.0)
         
-    asset_prices = get_real_asset_prices().tail(n_periods)
+    # Load the full history (since 1960)
+    full_asset_history = get_long_history_assets()
+
+    # Align with Macro Data (FRED-MD)
+    # The intersection ensures we have both Macro AND Asset data for every row
+    common_index = macro_data.index.intersection(full_asset_history.index)
+
+    # Filter based on the window selected by the user (n_periods)
+    # Note: For model training, we want the full history to learn the equations,
+    # but for the visual "Asset Data" tab, we might show n_periods.
+    # HERE: We slice for the VECM using the full common history.
+    asset_prices = full_asset_history.loc[common_index]
     
     # Initialize model components
     kernel_dict = KernelDictionary()
@@ -1311,7 +1420,7 @@ def main():
         
         with col_right:
             st.markdown('<div class="panel-header">ASSET PERFORMANCE (INDEXED)</div>', unsafe_allow_html=True)
-            st.plotly_chart(plot_asset_performance(asset_prices), width="stretch", config={'displayModeBar': False})
+            st.plotly_chart(plot_asset_performance(asset_prices.tail(min(n_periods, len(asset_prices)))), width="stretch", config={'displayModeBar': False})
             
             st.markdown('<div class="panel-header">ERROR CORRECTION TERM</div>', unsafe_allow_html=True)
             st.plotly_chart(plot_ect_series(ect), width="stretch", config={'displayModeBar': False})
@@ -1394,6 +1503,8 @@ def main():
         
         for asset in asset_gamma.index:
             row = asset_gamma.loc[asset]
+            intercept = vecm.intercepts.get(asset, 0.0)
+            
             # Select top 5 features by absolute magnitude
             top_features = row.abs().sort_values(ascending=False).head(5)
             active_features = row[top_features.index]
@@ -1429,7 +1540,7 @@ def main():
             # Asset symbol
             asset_sym = "P_t^{" + asset + "}"
             
-            st.latex(fr"\ln({asset_sym}) = \beta_0 + {equation_str} + \epsilon_t")
+            st.latex(fr"\Delta \ln({asset_sym}) = {intercept:.4f} + {equation_str} + \epsilon_t")
             st.divider()
 
         col1, col2 = st.columns(2)
@@ -1538,7 +1649,7 @@ def main():
         col_assets_left, col_assets_right = st.columns(2)
         
         with col_assets_left:
-            st.markdown('<div style="font-family: \'IBM Plex Mono\'; font-size: 0.8rem; color: #888; margin-bottom: 0.5rem;">HISTORICAL PRICES</div>', unsafe_allow_html=True)
+            st.markdown('<div style="font-family: \'IBM Plex Mono\'; font-size: 0.8rem; color: #888; margin-bottom: 0.5rem;">HISTORICAL PRICES (FULL TRAINING SET)</div>', unsafe_allow_html=True)
             st.dataframe(
                 asset_prices,
                 width="stretch",
@@ -1546,7 +1657,7 @@ def main():
             )
             
         with col_assets_right:
-            st.markdown('<div style="font-family: \'IBM Plex Mono\'; font-size: 0.8rem; color: #888; margin-bottom: 0.5rem;">LOG RETURNS</div>', unsafe_allow_html=True)
+            st.markdown('<div style="font-family: \'IBM Plex Mono\'; font-size: 0.8rem; color: #888; margin-bottom: 0.5rem;">LOG RETURNS (FULL TRAINING SET)</div>', unsafe_allow_html=True)
             st.dataframe(
                 asset_returns,
                 width="stretch",
