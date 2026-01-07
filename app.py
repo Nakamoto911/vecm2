@@ -256,6 +256,7 @@ st.markdown("""
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.7rem;
         letter-spacing: 1px;
+        padding: 0 20px;
     }
     
     .stTabs [aria-selected="true"] {
