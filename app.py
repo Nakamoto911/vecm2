@@ -1396,7 +1396,7 @@ def main():
     st.markdown("<div style='height: 1rem'></div>", unsafe_allow_html=True)
     
     # Main content tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["ALLOCATION", "MACRO REGIME", "MODEL DIAGNOSTICS", "ALGORITHM STEPS", "AUDIT"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["ALLOCATION", "MACRO REGIME", "MODEL DIAGNOSTICS", "ALGORITHM STEPS", "AUDIT", "SPECS"])
     
     with tab1:
         col_left, col_right = st.columns([1, 2])
@@ -1671,6 +1671,14 @@ def main():
             width="stretch",
             height=400
         )
+
+    with tab6:
+        try:
+            with open('specs.md', 'r') as f:
+                specs_content = f.read()
+            st.markdown(specs_content, unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"Error loading specs.md: {e}")
     
     # Footer
     st.markdown("""
