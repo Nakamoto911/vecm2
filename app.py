@@ -876,7 +876,15 @@ class AdaptiveElasticNetVECM:
             columns=kernel_features.columns
         )
         self.intercepts = pd.Series(model.intercept_, index=changes.columns)
-        return self.gamma
+        
+        # Compute fitted values
+        fitted = pd.DataFrame(
+            model.predict(X_scaled_df.loc[common_idx]),
+            index=common_idx,
+            columns=changes.columns
+        )
+        
+        return self.gamma, fitted
 
 
 class PortfolioAllocator:
@@ -1160,6 +1168,73 @@ def plot_coef_heatmap(gamma: pd.DataFrame) -> go.Figure:
         height=300,
         xaxis=dict(tickangle=-45, tickfont=dict(size=8, color='#888888')),
         yaxis=dict(tickfont=dict(size=10, color='#888888'))
+    )
+    
+    return fig
+
+
+def plot_actual_vs_fitted(actual_returns: pd.Series, fitted_returns: pd.Series, title: str) -> go.Figure:
+    """Plot cumulative actual vs fitted returns."""
+    theme = create_plotly_theme()
+    
+    # Convert log-returns to price level (cumulative sum of log returns)
+    # Alignment check
+    common_idx = actual_returns.index.intersection(fitted_returns.index)
+    actual = actual_returns.loc[common_idx]
+    fitted = fitted_returns.loc[common_idx]
+    
+    actual_prices = np.exp(actual.cumsum()) * 100
+    fitted_prices = np.exp(fitted.cumsum()) * 100
+    
+    fig = go.Figure()
+    
+    # Add Recession Bands
+    for start, end in NBER_RECESSIONS:
+        if pd.to_datetime(start) <= common_idx[-1] and pd.to_datetime(end) >= common_idx[0]:
+            fig.add_vrect(
+                x0=start, x1=end,
+                fillcolor="#ffffff", opacity=0.05,
+                layer="below", line_width=0
+            )
+    
+    fig.add_trace(go.Scatter(
+        x=common_idx,
+        y=actual_prices,
+        name='Actual',
+        mode='lines',
+        line=dict(color='#ff6b35', width=1.5),
+        hovertemplate='Actual: %{y:.2f}<extra></extra>'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=common_idx,
+        y=fitted_prices,
+        name='Model Fitted',
+        mode='lines',
+        line=dict(color='#00d26a', width=1.5, dash='dot'),
+        hovertemplate='Fitted: %{y:.2f}<extra></extra>'
+    ))
+    
+    fig.update_layout(
+        title=dict(
+            text=f"<b>{title} Analysis</b>: Actual vs Equation",
+            font=dict(family='IBM Plex Mono', size=12, color='#e8e8e8'),
+            x=0.02, y=0.95
+        ),
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1,
+            font=dict(size=10, color='#888888')
+        ),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=40, r=20, t=60, b=40),
+        height=250,
+        xaxis=dict(**theme['xaxis'], showgrid=False),
+        yaxis=dict(**theme['yaxis'], title='Indexed (100)', title_font=dict(size=9))
     )
     
     return fig
@@ -1468,7 +1543,7 @@ def main():
     ect = vecm.compute_ect(levels)
     
     # Step 6: Gamma estimation
-    gamma = vecm.estimate_gamma(changes, kernel_features)
+    gamma, macro_fitted = vecm.estimate_gamma(changes, kernel_features)
     active_vars = (gamma.values != 0).sum()
     
     # Step 7: Portfolio signals
@@ -1478,7 +1553,7 @@ def main():
     asset_returns = np.log(asset_prices).diff().dropna()
     # Align data
     common_idx = asset_returns.index.intersection(kernel_features.index)
-    asset_gamma = vecm.estimate_gamma(asset_returns.loc[common_idx], kernel_features.loc[common_idx])
+    asset_gamma, asset_fitted = vecm.estimate_gamma(asset_returns.loc[common_idx], kernel_features.loc[common_idx])
     
     # =========================================================================
     # DASHBOARD LAYOUT
@@ -1786,6 +1861,19 @@ def main():
             asset_sym = "P_t^{" + asset + "}"
             
             st.latex(fr"\Delta \ln({asset_sym}) = {intercept:.4f} + {equation_str} + \epsilon_t")
+            
+            with st.expander(f"View {asset} Equation Analysis Chart"):
+                if asset in asset_fitted.columns:
+                    actual_asset = asset_returns[asset]
+                    fitted_asset = asset_fitted[asset]
+                    st.plotly_chart(
+                        plot_actual_vs_fitted(actual_asset, fitted_asset, asset),
+                        width="stretch",
+                        config={'displayModeBar': False}
+                    )
+                else:
+                    st.info(f"Fitted values for {asset} not available.")
+                    
             st.divider()
 
         col1, col2 = st.columns(2)
