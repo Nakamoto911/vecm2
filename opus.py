@@ -11,6 +11,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import plotly.express as px
 from sklearn.linear_model import ElasticNet, ElasticNetCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import TimeSeriesSplit
@@ -927,6 +928,118 @@ def plot_driver_vs_asset(feat_data: pd.DataFrame, asset_returns: pd.DataFrame,
     return fig
 
 
+def plot_driver_scatter(feat_data: pd.DataFrame, asset_returns: pd.DataFrame, 
+                        feat_name: str, asset: str, descriptions: dict = None) -> go.Figure:
+    """Scatter plot of Driver vs Asset Return, colored by decade."""
+    theme = create_theme()
+    
+    if feat_name not in feat_data.columns or asset not in asset_returns.columns:
+        return go.Figure()
+        
+    combined = pd.concat([feat_data[feat_name], asset_returns[asset]], axis=1).dropna()
+    if combined.empty:
+        return go.Figure()
+        
+    combined['Decade'] = (combined.index.year // 10 * 10).astype(str) + "s"
+    
+    base_var = feat_name.split('_')[0]
+    desc = descriptions.get(base_var, base_var) if descriptions else base_var
+    
+    fig = px.scatter(
+        combined, x=feat_name, y=asset, color='Decade',
+        trendline="ols",
+        title=f"Correlation Density: {feat_name} ({desc}) vs {asset}",
+        labels={feat_name: f"{feat_name}", asset: f"{asset} Fwd Return"},
+        color_discrete_sequence=px.colors.qualitative.Bold
+    )
+    
+    fig.update_layout(
+        paper_bgcolor=theme['paper_bgcolor'],
+        plot_bgcolor=theme['plot_bgcolor'],
+        font=theme['font'],
+        margin=dict(l=50, r=20, t=40, b=40),
+        height=400,
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
+        xaxis=dict(gridcolor='#1a1a1a', title=feat_name),
+        yaxis=dict(gridcolor='#1a1a1a', title=f"{asset} Return", tickformat='.1%')
+    )
+    return fig
+
+
+def plot_rolling_correlation(feat_data: pd.DataFrame, asset_returns: pd.DataFrame, 
+                             feat_name: str, asset: str, window: int = 60) -> go.Figure:
+    """Plot 60-month rolling correlation between driver and asset."""
+    theme = create_theme()
+    
+    if feat_name not in feat_data.columns or asset not in asset_returns.columns:
+        return go.Figure()
+        
+    combined = pd.concat([feat_data[feat_name], asset_returns[asset]], axis=1).dropna()
+    if len(combined) < window:
+        return go.Figure()
+        
+    rolling_corr = combined[feat_name].rolling(window).corr(combined[asset])
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=rolling_corr.index, y=rolling_corr,
+        mode='lines', line=dict(color='#ff6b35', width=1.5),
+        fill='tozeroy', fillcolor='rgba(255, 107, 53, 0.1)',
+        name='Rolling Correlation'
+    ))
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="#444")
+    
+    fig.update_layout(
+        title=f"Rolling {window}M Correlation: {feat_name} vs {asset}",
+        paper_bgcolor=theme['paper_bgcolor'],
+        plot_bgcolor=theme['plot_bgcolor'],
+        font=theme['font'],
+        margin=dict(l=50, r=20, t=40, b=40),
+        height=300,
+        xaxis=dict(gridcolor='#1a1a1a'),
+        yaxis=dict(gridcolor='#1a1a1a', title='Correlation', range=[-1, 1])
+    )
+    return fig
+
+
+def plot_quintile_analysis(feat_data: pd.DataFrame, asset_returns: pd.DataFrame, 
+                           feat_name: str, asset: str) -> go.Figure:
+    """Group asset returns into quintiles based on driver values."""
+    theme = create_theme()
+    
+    if feat_name not in feat_data.columns or asset not in asset_returns.columns:
+        return go.Figure()
+        
+    combined = pd.concat([feat_data[feat_name], asset_returns[asset]], axis=1).dropna()
+    if combined.empty:
+        return go.Figure()
+        
+    combined['Quintile'] = pd.qcut(combined[feat_name], 5, labels=['Q1 (Lowest)', 'Q2', 'Q3', 'Q4', 'Q5 (Highest)'])
+    quintile_avg = combined.groupby('Quintile')[asset].mean().reset_index()
+    
+    colors = ['#ff4757', '#ffa502', '#ced6e0', '#2ed573', '#1e90ff']
+    
+    fig = px.bar(
+        quintile_avg, x='Quintile', y=asset,
+        title=f"Quintile Analysis: {asset} Return by {feat_name} Bucket",
+        color='Quintile',
+        color_discrete_sequence=colors
+    )
+    
+    fig.update_layout(
+        paper_bgcolor=theme['paper_bgcolor'],
+        plot_bgcolor=theme['plot_bgcolor'],
+        font=theme['font'],
+        margin=dict(l=50, r=20, t=40, b=40),
+        height=350,
+        showlegend=False,
+        xaxis=dict(gridcolor='#1a1a1a', title=f"{feat_name} Quintiles"),
+        yaxis=dict(gridcolor='#1a1a1a', title='Avg Forward Return', tickformat='.1%')
+    )
+    return fig
+
+
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -1217,6 +1330,16 @@ def main():
                         plot_driver_vs_asset(macro_features, y_forward, selected_feat, asset, descriptions),
                         width='stretch'
                     )
+
+                    # NEW: Deep Dive Analysis Row 1
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.plotly_chart(plot_driver_scatter(macro_features, y_forward, selected_feat, asset, descriptions), width='stretch')
+                    with c2:
+                        st.plotly_chart(plot_rolling_correlation(macro_features, y_forward, selected_feat, asset), width='stretch')
+                    
+                    # NEW: Deep Dive Analysis Row 2
+                    st.plotly_chart(plot_quintile_analysis(macro_features, y_forward, selected_feat, asset), width='stretch')
                 
                 # Stability Boxplot
                 st.plotly_chart(plot_stability_boxplot(stability_results_map, asset, descriptions), width='stretch')
