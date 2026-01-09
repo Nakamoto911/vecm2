@@ -432,6 +432,99 @@ def select_features_elastic_net(y: pd.Series, X: pd.DataFrame,
     return selected, model.coef_, model.alpha_
 
 
+def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame, 
+                              min_train_months: int = 120, 
+                              horizon_months: int = 60,
+                              rebalance_freq: int = 12) -> pd.DataFrame:
+    """
+    Recursive walk-forward (expanding window) backtest.
+    Ensures no look-ahead bias by only training on fully realized returns.
+    """
+    import statsmodels.api as sm
+    from scipy.stats import t
+    
+    results = []
+    dates = X.index
+    
+    # Starting point: we need enough data for the first training set
+    # and the target needs to be realized by the time we make the prediction.
+    # Prediction date starts after min_train_months + horizon_months.
+    start_idx = min_train_months + horizon_months
+    
+    if start_idx >= len(dates):
+        return pd.DataFrame(columns=['predicted_return', 'lower_ci', 'upper_ci'])
+
+    # Loop through rebalance dates
+    for i in range(start_idx, len(dates), rebalance_freq):
+        current_date = dates[i]
+        
+        # 1. Define Training Set (Strictly No Peeking)
+        # We can only train on data where the return is already KNOWN.
+        # Known date limit = current_date - horizon_months
+        train_limit = current_date - pd.DateOffset(months=horizon_months)
+        train_mask = X.index <= train_limit
+        
+        X_train_all = X[train_mask]
+        y_train_all = y[train_mask].dropna() # Align indices
+        X_train = X_train_all.loc[y_train_all.index]
+        
+        # Data Sufficiency check
+        if len(y_train_all) < 60:
+            continue
+            
+        # 2. Select Features (Dynamically!)
+        selected_feats, _, _ = select_features_elastic_net(y_train_all, X_train)
+        
+        # Determine prediction window
+        end_window = min(i + rebalance_freq, len(dates))
+        predict_idx = dates[i : end_window]
+        X_live_full = X.loc[predict_idx]
+        
+        if not selected_feats:
+            # Fallback: Historical Mean
+            pred_vals = pd.Series(y_train_all.mean(), index=predict_idx)
+            se = y_train_all.std()
+        else:
+            # 3. Estimate Model
+            hac_res = estimate_with_hac(y_train_all, X_train[selected_feats], lag=horizon_months)
+            model = hac_res['model']
+            
+            # 4. Predict
+            X_live = X_live_full[selected_feats]
+            X_live_const = sm.add_constant(X_live, has_constant='add')
+            
+            # Ensure all columns from training are present in prediction
+            pred_vals = model.predict(X_live_const)
+            
+            # Prediction SE (simplified as per instruction)
+            se = hac_res['std_errors'].mean()
+        
+        # t-critical for 90% CI (consistent with app)
+        t_crit = t.ppf(0.95, df=len(y_train_all)-len(selected_feats)-1) if selected_feats else 1.66
+        
+        # Store results
+        for date in predict_idx:
+            val = pred_vals.loc[date]
+            results.append({
+                'date': date,
+                'predicted_return': val,
+                'lower_ci': val - (t_crit * se),
+                'upper_ci': val + (t_crit * se)
+            })
+            
+    if not results:
+        return pd.DataFrame(columns=['predicted_return', 'lower_ci', 'upper_ci'])
+        
+    return pd.DataFrame(results).set_index('date')
+
+
+@st.cache_data(show_spinner=False)
+def cached_walk_forward(y, X, min_train_months=120, horizon_months=60, rebalance_freq=12):
+    return run_walk_forward_backtest(y, X, min_train_months, horizon_months, rebalance_freq)
+
+
+
+
 def time_series_cv(y: pd.Series, X: pd.DataFrame, n_splits: int = 5):
     """
     Time-series cross-validation for model selection.
@@ -1419,31 +1512,46 @@ def main():
                 st.plotly_chart(plot_stability_boxplot(stability_results_map, asset, descriptions), width='stretch')
 
     with tab3:
-        st.markdown('<div class="panel-header">HISTORICAL BACKTEST (IN-SAMPLE PREDICTION)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-header">HISTORICAL BACKTEST (WALK-FORWARD OOS)</div>', unsafe_allow_html=True)
         asset_to_plot = st.selectbox("Select Asset", ['EQUITY', 'BONDS', 'GOLD'])
         
-        # Compute historical predictions
-        hac = model_stats[asset_to_plot]
-        stable_feats = stability_results_map[asset_to_plot]['stable_features']
-        X_asset = X[stable_feats]
+        # Run Walk-Forward Backtest (Cached)
+        with st.spinner(f"Running Walk-Forward Backtest for {asset_to_plot}..."):
+            oos_results = cached_walk_forward(
+                y[asset_to_plot], 
+                X, 
+                min_train_months=120, 
+                horizon_months=horizon_months, 
+                rebalance_freq=12
+            )
         
-        # Pred = Intercept + X * Beta
-        intercept = hac['coefficients']['const']
-        beta = hac['coefficients'].drop('const')
-        hist_pred = intercept + X_asset.dot(beta)
-        
-        # Simplified CI for history
-        se = hac['std_errors'].mean()
-        t_crit = t.ppf((1 + confidence_level) / 2, df=100)
-        hist_lower = hist_pred - t_crit * se
-        hist_upper = hist_pred + t_crit * se
-        
-        st.plotly_chart(plot_backtest(y[asset_to_plot], hist_pred, hist_lower, hist_upper), width='stretch')
-        
-        # Stats
-        r2 = hac['r_squared']
-        corr = y[asset_to_plot].corr(hist_pred)
-        st.markdown(f"**R-Squared:** {r2:.2f} | **Correlation:** {corr:.2f}")
+        if not oos_results.empty:
+            # Align actual returns with OOS predictions
+            actual_oos = y[asset_to_plot].loc[oos_results.index]
+            
+            # Plot
+            fig_backtest = plot_backtest(
+                actual_oos, 
+                oos_results['predicted_return'], 
+                oos_results['lower_ci'], 
+                oos_results['upper_ci']
+            )
+            
+            # Visual Cue: Update line style for OOS Prediction
+            for trace in fig_backtest.data:
+                if trace.name == 'Predicted':
+                    trace.name = 'OOS Prediction (Walk-Forward)'
+                    trace.line.dash = 'dash'
+                    trace.line.color = '#4da6ff'
+            
+            st.plotly_chart(fig_backtest, width='stretch')
+            
+            # Stats
+            corr = actual_oos.corr(oos_results['predicted_return'])
+            rmse = np.sqrt(((actual_oos - oos_results['predicted_return'])**2).mean())
+            st.markdown(f"**OOS Correlation:** {corr:.2f} | **OOS RMSE:** {rmse:.2%}")
+        else:
+            st.warning("Insufficient data for Walk-Forward Backtest.")
 
     with tab4:
         st.markdown('<div class="panel-header">DIAGNOSTICS & PARAMETERS</div>', unsafe_allow_html=True)
