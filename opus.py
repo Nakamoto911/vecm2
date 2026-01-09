@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.subplots import make_subplots
 from sklearn.linear_model import ElasticNet, ElasticNetCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import TimeSeriesSplit
@@ -1040,6 +1041,82 @@ def plot_quintile_analysis(feat_data: pd.DataFrame, asset_returns: pd.DataFrame,
     return fig
 
 
+def plot_combined_driver_analysis(feat_data: pd.DataFrame, asset_returns: pd.DataFrame, 
+                                  feat_name: str, asset: str, descriptions: dict = None, window: int = 60) -> go.Figure:
+    """Combined chart with shared X-axis: Top (Driver vs Asset), Bottom (Rolling Correlation)."""
+    theme = create_theme()
+    
+    if feat_name not in feat_data.columns or asset not in asset_returns.columns:
+        return go.Figure()
+        
+    combined = pd.concat([feat_data[feat_name], asset_returns[asset]], axis=1).dropna()
+    if combined.empty:
+        return go.Figure()
+        
+    macro_vals = combined[feat_name]
+    asset_vals = combined[asset]
+    rolling_corr = macro_vals.rolling(window).corr(asset_vals)
+    
+    base_var = feat_name.split('_')[0]
+    desc = descriptions.get(base_var, base_var) if descriptions else base_var
+    
+    fig = make_subplots(
+        rows=2, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.05,
+        row_heights=[0.7, 0.3],
+        specs=[[{"secondary_y": True}], [{"secondary_y": False}]]
+    )
+    
+    # 1. Top Panel: Dual Axis Comparison
+    # Macro series (left axis)
+    fig.add_trace(go.Scatter(
+        x=combined.index, y=macro_vals, name=feat_name,
+        mode='lines', line=dict(color='#00d26a', width=1.5),
+        hovertemplate="<b>" + feat_name + "</b>: %{y:.4f}<extra></extra>"
+    ), row=1, col=1, secondary_y=False)
+    
+    # Asset returns (right axis)
+    fig.add_trace(go.Scatter(
+        x=combined.index, y=asset_vals, name=asset,
+        mode='lines', line=dict(color='#4da6ff', width=1.5),
+        hovertemplate="<b>" + asset + " Return</b>: %{y:.2%}<extra></extra>"
+    ), row=1, col=1, secondary_y=True)
+    
+    # 2. Bottom Panel: Rolling Correlation
+    fig.add_trace(go.Scatter(
+        x=rolling_corr.index, y=rolling_corr,
+        mode='lines', line=dict(color='#ff6b35', width=1.5),
+        fill='tozeroy', fillcolor='rgba(255, 107, 53, 0.1)',
+        name=f'{window}M Rolling Correlation',
+        hovertemplate="<b>Correlation</b>: %{y:.2f}<extra></extra>"
+    ), row=2, col=1)
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="#444", row=2, col=1)
+    
+    # Layout updates
+    fig.update_layout(
+        title=dict(text=f"{feat_name} ({desc}) Analysis", 
+                  font=dict(family='IBM Plex Mono', size=12, color='#888')),
+        paper_bgcolor=theme['paper_bgcolor'],
+        plot_bgcolor=theme['plot_bgcolor'],
+        margin=dict(l=50, r=50, t=60, b=40),
+        height=550,
+        showlegend=True,
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
+        hovermode='x unified'
+    )
+    
+    # Axis styling
+    fig.update_xaxes(gridcolor='#1a1a1a', row=1, col=1)
+    fig.update_xaxes(gridcolor='#1a1a1a', row=2, col=1)
+    fig.update_yaxes(title_text=f"Macro: {feat_name}", gridcolor='#1a1a1a', row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="Fwd Return", gridcolor='#1a1a1a', tickformat='.0%', row=1, col=1, secondary_y=True)
+    fig.update_yaxes(title_text=f"{window}M Correlation", gridcolor='#1a1a1a', range=[-1, 1], row=2, col=1)
+    
+    return fig
+
+
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -1327,19 +1404,16 @@ def main():
                     selected_feat = attr.iloc[row_idx]['feature']
                     
                     st.plotly_chart(
-                        plot_driver_vs_asset(macro_features, y_forward, selected_feat, asset, descriptions),
+                        plot_combined_driver_analysis(macro_features, y_forward, selected_feat, asset, descriptions),
                         width='stretch'
                     )
 
-                    # NEW: Deep Dive Analysis Row 1
+                    # NEW: Deep Dive Analysis Row 2 (Correlation & Quintiles side-by-side)
                     c1, c2 = st.columns(2)
                     with c1:
                         st.plotly_chart(plot_driver_scatter(macro_features, y_forward, selected_feat, asset, descriptions), width='stretch')
                     with c2:
-                        st.plotly_chart(plot_rolling_correlation(macro_features, y_forward, selected_feat, asset), width='stretch')
-                    
-                    # NEW: Deep Dive Analysis Row 2
-                    st.plotly_chart(plot_quintile_analysis(macro_features, y_forward, selected_feat, asset), width='stretch')
+                        st.plotly_chart(plot_quintile_analysis(macro_features, y_forward, selected_feat, asset), width='stretch')
                 
                 # Stability Boxplot
                 st.plotly_chart(plot_stability_boxplot(stability_results_map, asset, descriptions), width='stretch')
