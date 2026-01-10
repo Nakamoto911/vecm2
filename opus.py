@@ -1,10 +1,10 @@
 """
 VECM Strategic Asset Allocation System - V3
-Forward Return Prediction Model (5-10 Year Horizon)
+Forward Return Prediction Model (12-Month Horizon)
 
 Target: US Equities / Bonds / Gold
 Methodology: Annualized Forward Returns ~ Macro State Features
-Estimation: Elastic Net Selection + OLS with HAC Robust Standard Errors
+Estimation: Robust Huber Regression + Stability Selection
 """
 
 import streamlit as st
@@ -389,7 +389,7 @@ def load_asset_data(start_date: str = '1960-01-01') -> pd.DataFrame:
 # ESTIMATION LOGIC
 # ============================================================================
 
-def estimate_with_hac(y: pd.Series, X: pd.DataFrame, lag: int = 59) -> dict:
+def estimate_with_hac(y: pd.Series, X: pd.DataFrame, lag: int = 11) -> dict:
     """
     OLS estimation with Newey-West HAC standard errors.
     """
@@ -605,7 +605,7 @@ def time_series_cv(y: pd.Series, X: pd.DataFrame, n_splits: int = 5):
 
 
 def stability_analysis(y: pd.Series, X: pd.DataFrame, 
-                       horizon_months: int = 60,
+                       horizon_months: int = 12,
                        window_years: int = 25,
                        step_years: int = 5) -> list:
     """
