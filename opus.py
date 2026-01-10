@@ -23,184 +23,9 @@ import pandas_datareader.data as web
 import warnings
 warnings.filterwarnings('ignore')
 
-# Page configuration
-st.set_page_config(
-    page_title="VECM Strategic Allocation",
-    page_icon="◈",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Streamlit Setup moved to main()
 
-# Custom CSS
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
-    
-    :root {
-        --bg-primary: #0a0a0a;
-        --bg-secondary: #111111;
-        --bg-tertiary: #1a1a1a;
-        --border-color: #2a2a2a;
-        --text-primary: #e8e8e8;
-        --text-secondary: #888888;
-        --text-muted: #555555;
-        --accent-orange: #ff6b35;
-        --accent-green: #00d26a;
-        --accent-red: #ff4757;
-        --accent-blue: #4da6ff;
-        --accent-gold: #ffd700;
-    }
-    
-    .stApp {
-        background-color: var(--bg-primary);
-        font-family: 'IBM Plex Sans', sans-serif;
-    }
-    
-    .main .block-container {
-        padding: 1rem 2rem;
-        max-width: 100%;
-    }
-    
-    .header-container {
-        background: linear-gradient(180deg, #111111 0%, #0a0a0a 100%);
-        border-bottom: 1px solid var(--border-color);
-        padding: 1rem 0;
-        margin-bottom: 1.5rem;
-    }
-    
-    .header-title {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 1.1rem;
-        font-weight: 600;
-        color: var(--accent-orange);
-        letter-spacing: 0.5px;
-        margin: 0;
-    }
-    
-    .header-subtitle {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 0.75rem;
-        color: var(--text-secondary);
-        letter-spacing: 1px;
-        margin-top: 0.25rem;
-    }
-    
-    .panel-header {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 0.7rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-        letter-spacing: 1.5px;
-        text-transform: uppercase;
-        border-bottom: 1px solid var(--border-color);
-        padding-bottom: 0.5rem;
-        margin-bottom: 0.75rem;
-    }
-    
-    .metric-card {
-        background-color: var(--bg-tertiary);
-        border: 1px solid var(--border-color);
-        border-radius: 2px;
-        padding: 0.75rem;
-        text-align: center;
-    }
-    
-    .metric-label {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 0.65rem;
-        color: var(--text-muted);
-        letter-spacing: 1px;
-        text-transform: uppercase;
-    }
-    
-    .metric-value {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 1.25rem;
-        font-weight: 600;
-        color: var(--text-primary);
-        margin-top: 0.25rem;
-    }
-    
-    .metric-value.positive { color: var(--accent-green); }
-    .metric-value.negative { color: var(--accent-red); }
-    .metric-value.warning { color: var(--accent-orange); }
-    
-    .data-table {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 0.75rem;
-        width: 100%;
-        border-collapse: collapse;
-    }
-    
-    .data-table th {
-        background-color: var(--bg-tertiary);
-        color: var(--text-secondary);
-        font-weight: 500;
-        text-transform: uppercase;
-        padding: 0.5rem;
-        border-bottom: 1px solid var(--border-color);
-        text-align: left;
-    }
-    
-    .data-table td {
-        color: var(--text-primary);
-        padding: 0.5rem;
-        border-bottom: 1px solid var(--border-color);
-    }
-    
-    section[data-testid="stSidebar"] {
-        background-color: var(--bg-secondary);
-        border-right: 1px solid var(--border-color);
-    }
-    
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    
-    .stButton > button {
-        background-color: var(--bg-tertiary);
-        border: 1px solid var(--border-color);
-        color: var(--text-primary);
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 0.75rem;
-        transition: all 0.2s;
-    }
-    
-    .stButton > button:hover {
-        background-color: var(--accent-orange);
-        border-color: var(--accent-orange);
-        color: #000;
-    }
-    
-    .stTabs [data-baseweb="tab-list"] { background-color: var(--bg-secondary); gap: 0; }
-    
-    .stTabs [data-baseweb="tab"] {
-        background-color: var(--bg-tertiary);
-        border: 1px solid var(--border-color);
-        color: var(--text-secondary);
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 0.7rem;
-        padding: 0 20px;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background-color: var(--bg-primary);
-        color: var(--accent-orange);
-        border-bottom-color: var(--bg-primary);
-    }
-    
-    .debug-box {
-        background: #1a1a1a;
-        border: 1px solid #333;
-        padding: 0.75rem;
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 0.75rem;
-        color: #888;
-        margin: 0.5rem 0;
-        border-radius: 2px;
-    }
-</style>
-""", unsafe_allow_html=True)
+# CSS moved to main()
 
 
 # ============================================================================
@@ -1488,10 +1313,187 @@ def generate_narrative(expected_returns: dict,
 # ============================================================================
 
 def main():
+    st.set_page_config(
+        page_title="VECM Strategic Allocation",
+        page_icon="◈",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
+    st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+    
+    :root {
+        --bg-primary: #0a0a0a;
+        --bg-secondary: #111111;
+        --bg-tertiary: #1a1a1a;
+        --border-color: #2a2a2a;
+        --text-primary: #e8e8e8;
+        --text-secondary: #888888;
+        --text-muted: #555555;
+        --accent-orange: #ff6b35;
+        --accent-green: #00d26a;
+        --accent-red: #ff4757;
+        --accent-blue: #4da6ff;
+        --accent-gold: #ffd700;
+    }
+    
+    .stApp {
+        background-color: var(--bg-primary);
+        font-family: 'IBM Plex Sans', sans-serif;
+    }
+    
+    .main .block-container {
+        padding: 1rem 2rem;
+        max-width: 100%;
+    }
+    
+    .header-container {
+        background: linear-gradient(180deg, #111111 0%, #0a0a0a 100%);
+        border-bottom: 1px solid var(--border-color);
+        padding: 1rem 0;
+        margin-bottom: 1.5rem;
+    }
+    
+    .header-title {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: var(--accent-orange);
+        letter-spacing: 0.5px;
+        margin: 0;
+    }
+    
+    .header-subtitle {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+        letter-spacing: 1px;
+        margin-top: 0.25rem;
+    }
+    
+    .panel-header {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.7rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        border-bottom: 1px solid var(--border-color);
+        padding-bottom: 0.5rem;
+        margin-bottom: 0.75rem;
+    }
+    
+    .metric-card {
+        background-color: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 2px;
+        padding: 0.75rem;
+        text-align: center;
+    }
+    
+    .metric-label {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.65rem;
+        color: var(--text-muted);
+        letter-spacing: 1px;
+        text-transform: uppercase;
+    }
+    
+    .metric-value {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-top: 0.25rem;
+    }
+    
+    .metric-value.positive { color: var(--accent-green); }
+    .metric-value.negative { color: var(--accent-red); }
+    .metric-value.warning { color: var(--accent-orange); }
+    
+    .data-table {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.75rem;
+        width: 100%;
+        border-collapse: collapse;
+    }
+    
+    .data-table th {
+        background-color: var(--bg-tertiary);
+        color: var(--text-secondary);
+        font-weight: 500;
+        text-transform: uppercase;
+        padding: 0.5rem;
+        border-bottom: 1px solid var(--border-color);
+        text-align: left;
+    }
+    
+    .data-table td {
+        color: var(--text-primary);
+        padding: 0.5rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+    
+    section[data-testid="stSidebar"] {
+        background-color: var(--bg-secondary);
+        border-right: 1px solid var(--border-color);
+    }
+    
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    .stButton > button {
+        background-color: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        color: var(--text-primary);
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.75rem;
+        transition: all 0.2s;
+    }
+    
+    .stButton > button:hover {
+        background-color: var(--accent-orange);
+        border-color: var(--accent-orange);
+        color: #000;
+    }
+    
+    .stTabs [data-baseweb="tab-list"] { background-color: var(--bg-secondary); gap: 0; }
+    
+    .stTabs [data-baseweb="tab"] {
+        background-color: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        color: var(--text-secondary);
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.7rem;
+        padding: 0 20px;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background-color: var(--bg-primary);
+        color: var(--accent-orange);
+        border-bottom-color: var(--bg-primary);
+    }
+    
+    .debug-box {
+        background: #1a1a1a;
+        border: 1px solid #333;
+        padding: 0.75rem;
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.75rem;
+        color: #888;
+        margin: 0.5rem 0;
+        border-radius: 2px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
     st.markdown("""
     <div class="header-container">
         <p class="header-title">◈ VECM STRATEGIC ALLOCATION</p>
-        <p class=\"header-subtitle\">FORWARD RETURN PREDICTION · 12-MONTH HORIZON</p>
+        <p class="header-subtitle">FORWARD RETURN PREDICTION · 12-MONTH HORIZON</p>
     </div>
     """, unsafe_allow_html=True)
     
