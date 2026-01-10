@@ -1803,7 +1803,6 @@ def main():
             for trace in fig_backtest.data:
                 if trace.name == 'Predicted':
                     trace.name = 'OOS Prediction (Walk-Forward)'
-                    trace.line.dash = 'dash'
                     trace.line.color = '#4da6ff'
             
             st.plotly_chart(fig_backtest, width='stretch')
