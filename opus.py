@@ -396,7 +396,7 @@ def estimate_with_hac(y: pd.Series, X: pd.DataFrame, lag: int = 59) -> dict:
     # Add constant for OLS
     import statsmodels.api as sm
     X_const = sm.add_constant(X)
-    model = OLS(y, X_const).fit(cov_type='HAC', cov_kwds={'maxlags': lag})
+    model = sm.OLS(y, X_const).fit(cov_type='HAC', cov_kwds={'maxlags': lag})
     return {
         'model': model,
         'coefficients': model.params,
@@ -405,6 +405,30 @@ def estimate_with_hac(y: pd.Series, X: pd.DataFrame, lag: int = 59) -> dict:
         'p_values': model.pvalues,
         'r_squared': model.rsquared,
         'resid': model.resid
+    }
+
+
+def estimate_robust(y: pd.Series, X: pd.DataFrame) -> dict:
+    """
+    Robust regression (Huber) that is less sensitive to outliers (like 2008 or 2020).
+    Replaces standard OLS for stability.
+    """
+    from sklearn.linear_model import HuberRegressor
+    
+    # 1. Robust Scaling (Winsorization)
+    # Cap features at roughly 3 standard deviations (1% and 99% quantiles) to prevent explosions
+    X_clipped = X.clip(lower=X.quantile(0.01), upper=X.quantile(0.99), axis=1)
+    
+    # 2. Fit Huber Regressor
+    # epsilon=1.35 is standard for 95% efficiency on normal data
+    model = HuberRegressor(epsilon=1.35, max_iter=200)
+    model.fit(X_clipped, y)
+    
+    return {
+        'model': model,
+        'coefficients': pd.Series(model.coef_, index=X.columns),
+        'intercept': model.intercept_,
+        'fitted_values': model.predict(X_clipped)
     }
 
 
@@ -488,7 +512,7 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         if len(y_train_all) < 60:
             continue
             
-        # 2. Stability Selection
+        # 1. Feature Selection (Keep ElasticNet, it's good for selection)
         selected_feats, selection_probs = select_features_elastic_net(y_train_all, X_train)
         
         # Store selection history
@@ -499,20 +523,32 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         # Determine prediction window
         end_window = min(i + rebalance_freq, len(dates))
         predict_idx = dates[i : end_window]
-        X_live_full = X.loc[predict_idx]
         
-        # 3. Estimate Final Model (OLS on selected features)
         if not selected_feats:
             pred_vals = pd.Series(y_train_all.mean(), index=predict_idx)
+            # Clip results for safety
+            pred_vals = np.clip(pred_vals, -0.30, 0.30)
             se = y_train_all.std()
         else:
-            hac_res = estimate_with_hac(y_train_all, X_train[selected_feats], lag=horizon_months)
-            model = hac_res['model']
+            # 2. Use the NEW Robust Estimator
+            robust_res = estimate_robust(y_train_all, X_train[selected_feats])
+            model = robust_res['model']
             
-            X_live = X_live_full[selected_feats]
-            X_live_const = sm.add_constant(X_live, has_constant='add')
-            pred_vals = model.predict(X_live_const)
-            se = hac_res['std_errors'].mean()
+            # 3. Predict with Safety Rails
+            X_live = X.loc[predict_idx][selected_feats]
+            # Clip the inputs for the live prediction too based on TRAIN quantiles
+            q01 = X_train[selected_feats].quantile(0.01)
+            q99 = X_train[selected_feats].quantile(0.99)
+            X_live_clipped = X_live.clip(lower=q01, upper=q99, axis=1)
+            
+            # Predict
+            raw_preds = model.predict(X_live_clipped)
+            
+            # Hard Cap the output: No annualized return > 30% or < -30%
+            pred_vals = pd.Series(np.clip(raw_preds, -0.30, 0.30), index=predict_idx)
+            
+            # Estimate SE from residuals for CI
+            se = np.std(y_train_all - robust_res['fitted_values'])
         
         t_crit = t.ppf(0.95, df=len(y_train_all)-len(selected_feats)-1) if selected_feats else 1.66
         
@@ -1279,6 +1315,76 @@ def plot_combined_driver_analysis(feat_data: pd.DataFrame, asset_returns: pd.Dat
 # MAIN
 # ============================================================================
 
+def plot_variable_survival(stability_results_map: dict, asset: str, descriptions: dict = None) -> go.Figure:
+    """
+    Charts how often each variable was selected in the Walk-Forward/Rolling tests.
+    This proves which variables are "Real" and which were just noise.
+    """
+    theme = create_theme()
+    
+    if asset not in stability_results_map:
+        return go.Figure().update_layout(title="No stability data available", **theme)
+    
+    # Extract coefficients history
+    coef_df = stability_results_map[asset].get('all_coefficients', pd.DataFrame())
+    
+    if coef_df.empty:
+        return go.Figure().update_layout(title="No selection history available", **theme)
+    
+    # Count non-zero occurrences for each feature
+    # We ignore 'const' if present
+    feature_cols = [c for c in coef_df.columns if c != 'const']
+    counts = (coef_df[feature_cols].fillna(0) != 0).sum().sort_values(ascending=True)
+    
+    # Filter only those that survived at least once
+    counts = counts[counts > 0]
+    
+    if counts.empty:
+        return go.Figure().update_layout(title="No drivers survived the stability test", **theme)
+    
+    # Prepare labels with descriptions if available
+    labels = []
+    for feat in counts.index:
+        desc = descriptions.get(feat.split('_')[0], feat) if descriptions else feat
+        labels.append(f"<b>{feat}</b><br><span style='font-size:9px; color:#666;'>{desc}</span>")
+    
+    # Create the chart
+    fig = go.Figure(go.Bar(
+        x=counts.values,
+        y=labels,
+        orientation='h',
+        marker=dict(
+            color=counts.values,
+            colorscale='Oranges',
+            line=dict(color='#0a0a0a', width=1)
+        ),
+        text=counts.values,
+        textposition='auto',
+    ))
+    
+    # Create the chart with combined layout settings
+    layout_args = theme.copy()
+    layout_args.update({
+        'title': dict(
+            text=f"VARIABLE SURVIVAL LEADERBOARD - {asset}",
+            font=dict(size=14, color='#ff6b35')
+        ),
+        'xaxis_title': "Number of Windows Selected",
+        'margin': dict(l=20, r=20, t=60, b=40),
+        'height': 400 + (len(counts) * 15),
+    })
+    
+    # Update yaxis from theme with showgrid=False
+    if 'yaxis' in layout_args:
+        layout_args['yaxis'] = {**layout_args['yaxis'], 'showgrid': False}
+    else:
+        layout_args['yaxis'] = dict(showgrid=False)
+        
+    fig.update_layout(**layout_args)
+    
+    return fig
+
+
 def plot_backtest(actual_returns: pd.Series, 
                   predicted_returns: pd.Series,
                   confidence_lower: pd.Series,
@@ -1573,6 +1679,9 @@ def main():
                 
                 # Stability Boxplot
                 st.plotly_chart(plot_stability_boxplot(stability_results_map, asset, descriptions), width='stretch')
+
+                # Step 3: Survival Leaderboard
+                st.plotly_chart(plot_variable_survival(stability_results_map, asset, descriptions), width='stretch')
 
     with tab3:
         st.markdown('<div class="panel-header">HISTORICAL BACKTEST (WALK-FORWARD OOS)</div>', unsafe_allow_html=True)
