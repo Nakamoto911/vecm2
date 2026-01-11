@@ -24,6 +24,19 @@ import pandas_datareader.data as web
 import warnings
 warnings.filterwarnings('ignore')
 
+# NBER Recession Dates (approximate for FRED-MD plotting)
+NBER_RECESSIONS = [
+    ('1960-04-01', '1961-02-01'),
+    ('1969-12-01', '1970-11-01'),
+    ('1973-11-01', '1975-03-01'),
+    ('1980-01-01', '1980-07-01'),
+    ('1981-07-01', '1982-11-01'),
+    ('1990-07-01', '1991-03-01'),
+    ('2001-03-01', '2001-11-01'),
+    ('2007-12-01', '2009-06-01'),
+    ('2020-02-01', '2020-04-01')
+]
+
 # Streamlit Setup moved to main()
 
 # CSS moved to main()
@@ -287,6 +300,7 @@ def estimate_robust(y: pd.Series, X: pd.DataFrame) -> dict:
     }
 
 
+@st.cache_data(show_spinner=False)
 def select_features_elastic_net(y: pd.Series, X: pd.DataFrame, 
                                  n_iterations: int = 50,
                                  sample_fraction: float = 0.7,
@@ -481,6 +495,7 @@ def time_series_cv(y: pd.Series, X: pd.DataFrame, n_splits: int = 5):
     return (np.mean(scores), np.std(scores)) if scores else (0.0, 0.0)
 
 
+@st.cache_data(show_spinner=False)
 def stability_analysis(y: pd.Series, X: pd.DataFrame, 
                        horizon_months: int = 12,
                        window_years: int = 25,
@@ -724,9 +739,129 @@ def compute_allocation(expected_returns: dict,
     return weights
 
 
-# ============================================================================
-# VISUALIZATION
-# ============================================================================
+
+@st.cache_data(ttl=3600)
+def load_full_fred_md_raw(file_path: str = '2025-11-MD.csv') -> tuple[pd.DataFrame, pd.Series]:
+    """Load the complete raw FRED-MD dataset and its transformation codes."""
+    try:
+        df_raw = pd.read_csv(file_path)
+        transform_codes = df_raw.iloc[0]
+        df = df_raw.iloc[1:].copy()
+        df['sasdate'] = pd.to_datetime(df['sasdate'], utc=True).dt.tz_localize(None)
+        df = df.set_index('sasdate')
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df, transform_codes
+    except Exception as e:
+        st.error(f"Error loading full FRED-MD raw data: {e}")
+        return pd.DataFrame(), pd.Series()
+
+
+@st.cache_data(ttl=3600)
+def load_fred_appendix(file_path: str = 'FRED-MD_updated_appendix.csv') -> pd.DataFrame:
+    """Load FRED-MD appendix for series names and groupings."""
+    try:
+        # Try different encodings for robustness
+        for enc in ['utf-8', 'latin1', 'cp1252']:
+            try:
+                df = pd.read_csv(file_path, encoding=enc)
+                if 'fred' in df.columns:
+                    # Normalize index to uppercase for robust matching
+                    df['fred'] = df['fred'].str.upper()
+                    df = df.set_index('fred')
+                return df
+            except UnicodeDecodeError:
+                continue
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading FRED appendix: {e}")
+        return pd.DataFrame()
+
+
+def apply_transformation(series: pd.Series, tcode: int) -> pd.Series:
+    """Apply McCracken & Ng (2016) transformations."""
+    if tcode == 1:
+        return series
+    elif tcode == 2:
+        return series.diff()
+    elif tcode == 3:
+        return series.diff().diff()
+    elif tcode == 4:
+        return np.log(series.replace(0, np.nan)).ffill()
+    elif tcode == 5:
+        return np.log(series.replace(0, np.nan)).diff().fillna(0)
+    elif tcode == 6:
+        return np.log(series.replace(0, np.nan)).diff().diff().fillna(0)
+    elif tcode == 7:
+        return series.pct_change().diff()
+    else:
+        return series
+
+
+def get_transformation_label(tcode: int) -> str:
+    """Get human-readable label for transformation code."""
+    labels = {
+        1: "Level (no change)",
+        2: "Change: x(t) - x(t-1)",
+        3: "Double Change",
+        4: "Log: log(x(t))",
+        5: "Log Change",
+        6: "Double Log Change",
+        7: "Change in % Change"
+    }
+    return labels.get(int(tcode), "Unknown")
+
+
+def plot_fred_series(data: pd.Series, title: str, subtitle: str, is_transformed: bool = False) -> go.Figure:
+    """Create a detailed plot for a FRED-MD series with stats and recession bands."""
+    theme = create_theme()
+    color = '#ff4757' if is_transformed else '#4da6ff'
+    
+    # Calculate statistics
+    stats = {
+        'Mean': data.mean(),
+        'Std': data.std(),
+        'Q1': data.quantile(0.25),
+        'Med': data.median(),
+        'Q3': data.quantile(0.75)
+    }
+    stats_str = ", ".join([f"{k}: {v:.2e}" if abs(v) < 0.01 and v != 0 else f"{k}: {v:.2f}" for k, v in stats.items()])
+    
+    fig = go.Figure()
+    
+    # Add Recession Bands
+    for start, end in NBER_RECESSIONS:
+        if pd.to_datetime(start) <= data.index[-1] and pd.to_datetime(end) >= data.index[0]:
+            fig.add_vrect(
+                x0=start, x1=end,
+                fillcolor="#ffffff", opacity=0.07,
+                layer="below", line_width=0
+            )
+            
+    fig.add_trace(go.Scatter(
+        x=data.index,
+        y=data.values,
+        mode='lines',
+        line=dict(color=color, width=1.3),
+        hovertemplate='%{x|%b %Y}<br>Value: %{y:.4f}<extra></extra>'
+    ))
+    
+    fig.update_layout(
+        title=dict(
+            text=f"<b>{title}</b><br><span style='font-size: 10px; color: #888;'>{subtitle}</span><br><span style='font-size: 9px; color: #555;'>{stats_str}</span>",
+            font=dict(family='IBM Plex Mono', size=13, color='#e8e8e8'),
+            x=0.05, y=0.92
+        ),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=40, r=20, t=75, b=40),
+        height=280,
+        xaxis=dict(**theme['xaxis']),
+        yaxis=dict(**theme['yaxis'])
+    )
+    
+    return fig
+
 
 def create_theme():
     return {
@@ -1263,6 +1398,109 @@ def plot_variable_survival(stability_results_map: dict, asset: str, descriptions
     return fig
 
 
+@st.cache_data(show_spinner=False)
+def run_collective_analysis(y, X, l1_ratio, min_persistence, estimation_window_years, horizon_months):
+    """
+    Runs the full analysis for all assets in one go and caches the results.
+    This prevents mid-rerun layout shifts that can reset st.tabs.
+    """
+    expected_returns = {}
+    confidence_intervals = {}
+    driver_attributions = {}
+    stability_results_map = {}
+    model_stats = {}
+    
+    for asset in ['EQUITY', 'BONDS', 'GOLD']:
+        y_asset = y[asset]
+        
+        # Stability Analysis (Rolling Windows)
+        stab_results = stability_analysis(y_asset, X, horizon_months=horizon_months, window_years=estimation_window_years)
+        metrics = compute_stability_metrics(stab_results, X.columns)
+        
+        # Stability Selection (Full Sample Bootstrapping)
+        stable_features, selection_probs = select_features_elastic_net(
+            y_asset.dropna(), 
+            X.loc[y_asset.dropna().index],
+            threshold=min_persistence,
+            l1_ratio=l1_ratio
+        )
+        
+        # Final Asset-Specific Estimation
+        y_valid = y_asset.dropna()
+        X_valid = X.loc[y_valid.index]
+        win = Winsorizer(threshold=3.0)
+        X_valid_clean = win.fit_transform(X_valid)
+        X_current_clean = win.transform(X.tail(1))
+        
+        if asset == 'EQUITY':
+            model = RandomForestRegressor(n_estimators=100, max_depth=3, random_state=42)
+            model.fit(X_valid_clean, y_valid)
+            exp_ret = model.predict(X_current_clean)[0]
+            prediction_se = np.std(y_valid - model.predict(X_valid_clean))
+            hac_results = {
+                'model': model,
+                'coefficients': pd.Series(0, index=X.columns.tolist() + ['const']),
+                'intercept': 0,
+                'importance': pd.Series(model.feature_importances_, index=X.columns)
+            }
+            beta = hac_results['importance']
+            selected_features = X.columns.tolist()
+        elif asset == 'BONDS':
+            model = ElasticNetCV(l1_ratio=[.1, .5, .7, .9, .95, .99, 1], cv=5, max_iter=5000)
+            model.fit(X_valid_clean, y_valid)
+            exp_ret = model.predict(X_current_clean)[0]
+            prediction_se = np.std(y_valid - model.predict(X_valid_clean))
+            hac_results = {
+                'model': model,
+                'coefficients': pd.Series(model.coef_, index=X.columns),
+                'intercept': model.intercept_
+            }
+            beta = pd.Series(model.coef_, index=X.columns)
+            selected_features = beta[beta != 0].index.tolist()
+        else: # GOLD
+            model = LinearRegression()
+            model.fit(X_valid_clean, y_valid)
+            exp_ret = model.predict(X_current_clean)[0]
+            prediction_se = np.std(y_valid - model.predict(X_valid_clean))
+            hac_results = {
+                'model': model,
+                'coefficients': pd.Series(model.coef_, index=X.columns),
+                'intercept': model.intercept_
+            }
+            beta = pd.Series(model.coef_, index=X.columns)
+            selected_features = beta[beta != 0].index.tolist()
+
+        # CI calculation
+        t_stat = 1.645 # 90% approx
+        expected_returns[asset] = exp_ret
+        confidence_intervals[asset] = [exp_ret - t_stat * prediction_se, exp_ret + t_stat * prediction_se]
+        
+        # Attribution
+        attr_data = []
+        for feat in selected_features:
+            val = X_current_clean[feat].iloc[0]
+            coef = beta[feat]
+            impact = val * coef
+            attr_data.append({
+                'feature': feat,
+                'Impact': impact,
+                'State': val,
+                'Weight': coef,
+                'Signal': 'BULLISH' if impact > 0.005 else 'BEARISH' if impact < -0.005 else 'NEUTRAL',
+                'Link': metrics[feat]['correlation'] if feat in metrics else 0
+            })
+        driver_attributions[asset] = pd.DataFrame(attr_data).sort_values('Impact', ascending=False)
+        stability_results_map[asset] = {
+            'metrics': metrics,
+            'stable_features': stable_features,
+            'hac_results': hac_results,
+            'all_coefficients': pd.DataFrame([res['coefficients'] for res in stab_results])
+        }
+        model_stats[asset] = hac_results
+
+    return expected_returns, confidence_intervals, driver_attributions, stability_results_map, model_stats
+
+
 def plot_backtest(actual_returns: pd.Series, 
                   predicted_returns: pd.Series,
                   confidence_lower: pd.Series,
@@ -1637,135 +1875,11 @@ def main():
     X = macro_features.loc[valid_idx]
     y = y_forward.loc[valid_idx]
     
-    # Results containers
-    expected_returns = {}
-    confidence_intervals = {}
-    driver_attributions = {}
-    stability_results_map = {}
-    model_stats = {}
-    
-    # 2. Main Analysis Loop per Asset
-    for asset in ['EQUITY', 'BONDS', 'GOLD']:
-        with st.spinner(f"Analyzing {asset}..."):
-            y_asset = y[asset]
-            
-            # Stability Analysis (Rolling Windows)
-            stab_results = stability_analysis(y_asset, X, horizon_months=horizon_months, window_years=estimation_window_years)
-            metrics = compute_stability_metrics(stab_results, X.columns)
-            
-            # Stability Selection (Full Sample Bootstrapping)
-            stable_features, selection_probs = select_features_elastic_net(
-                y_asset.dropna(), 
-                X.loc[y_asset.dropna().index],
-                threshold=min_persistence,
-                l1_ratio=l1_ratio
-            )
-            
-            # Final Asset-Specific Estimation (Full Sample) - Use same min_train logic
-            # To match the backtest's latest stability, we use the last 240+12 months or full history
-            y_valid = y_asset.dropna()
-            X_valid = X.loc[y_valid.index]
-            
-            # For the final "Live" model, we use the full history if it's long enough, 
-            # but ensure we align with the winsorization used in the backtest.
-            win = Winsorizer(threshold=3.0)
-            X_valid_clean = win.fit_transform(X_valid)
-            X_current_clean = win.transform(X.tail(1))
-            
-            if asset == 'EQUITY':
-                model = RandomForestRegressor(n_estimators=100, max_depth=3, random_state=42)
-                model.fit(X_valid_clean, y_valid)
-                
-                exp_ret = model.predict(X_current_clean)[0]
-                prediction_se = np.std(y_valid - model.predict(X_valid_clean))
-                
-                # Mock results for UI display
-                hac_results = {
-                    'model': model,
-                    'coefficients': pd.Series(0, index=X.columns.tolist() + ['const']),
-                    'intercept': 0,
-                    'importance': pd.Series(model.feature_importances_, index=X.columns)
-                }
-                beta = hac_results['importance']
-                selected_features = X.columns.tolist()
-
-            elif asset == 'BONDS':
-                model = ElasticNetCV(l1_ratio=[.1, .5, .7, .9, .95, .99, 1], cv=5, max_iter=5000)
-                model.fit(X_valid_clean, y_valid)
-                
-                exp_ret = model.predict(X_current_clean)[0]
-                prediction_se = np.std(y_valid - model.predict(X_valid_clean))
-                
-                hac_results = {
-                    'model': model,
-                    'coefficients': pd.Series(model.coef_, index=X.columns),
-                    'intercept': model.intercept_
-                }
-                beta = pd.Series(model.coef_, index=X.columns)
-                selected_features = beta[beta != 0].index.tolist()
-
-            else: # GOLD
-                model = LinearRegression()
-                model.fit(X_valid_clean, y_valid)
-                
-                exp_ret = model.predict(X_current_clean)[0]
-                prediction_se = np.std(y_valid - model.predict(X_valid_clean))
-                
-                hac_results = {
-                    'model': model,
-                    'coefficients': pd.Series(model.coef_, index=X.columns),
-                    'intercept': model.intercept_
-                }
-                beta = pd.Series(model.coef_, index=X.columns)
-                selected_features = X.columns.tolist()
-            
-            ci = compute_confidence_interval(exp_ret, prediction_se, confidence=confidence_level)
-            
-            # Detailed Attribution & Impact Analysis
-            feature_means = X_valid_clean.mean()
-            corrs = X_valid_clean.corrwith(y_valid)
-            current_states = X_current_clean.iloc[0]
-            
-            if asset == 'EQUITY':
-                # For non-linear, we use Importance * Sign(Corr) * State as a directional proxy
-                attribution = pd.DataFrame({
-                    'feature': X.columns,
-                    'Weight': model.feature_importances_,
-                    'Link': corrs.values,
-                    'State': current_states.values
-                })
-                attribution['Impact'] = attribution['Weight'] * np.sign(attribution['Link']) * attribution['State']
-                attribution = attribution.sort_values('Weight', ascending=False)
-            else:
-                # For linear, impact is simply Beta * State
-                attribution = pd.DataFrame({
-                    'feature': X.columns,
-                    'Weight': beta.values,
-                    'Link': corrs.values,
-                    'State': current_states.values,
-                })
-                attribution['Impact'] = attribution['Weight'] * attribution['State']
-                attribution = attribution.sort_values(attribution['Weight'].abs().name or 'Weight', ascending=False, key=lambda x: x.abs())
-
-            # Map impact to visual signals
-            def get_signal(val):
-                if val > 0.005: return "🟢 Bullish"
-                if val < -0.005: return "🔴 Bearish"
-                return "⚪ Neutral"
-            
-            attribution['Signal'] = attribution['Impact'].apply(get_signal)
-            
-            # Storage
-            expected_returns[asset] = exp_ret
-            confidence_intervals[asset] = ci
-            driver_attributions[asset] = attribution
-            stability_results_map[asset] = {
-                'metrics': metrics,
-                'stable_features': selected_features,
-                'hac_results': hac_results,
-                'all_coefficients': pd.DataFrame([res['coefficients'] for res in stab_results])
-            }
-            model_stats[asset] = hac_results
+    # 2. Main Analysis Loop (Synchronized & Cached)
+    with st.spinner("Synchronizing Macro Models..."):
+        expected_returns, confidence_intervals, driver_attributions, stability_results_map, model_stats = run_collective_analysis(
+            y, X, l1_ratio, min_persistence, estimation_window_years, horizon_months
+        )
             
     # 3. Regime and Allocation
     regime_status, stress_score, stress_indicators = evaluate_regime(macro_data, alert_threshold=alert_threshold)
@@ -1784,7 +1898,7 @@ def main():
     with m4:
         st.metric("Horizon", f"{horizon_months}m")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["ALLOCATION", "STABLE DRIVERS", "BACKTEST", "DIAGNOSTICS"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["ALLOCATION", "STABLE DRIVERS", "SERIES", "BACKTEST", "DIAGNOSTICS"])
     
     with tab1:
         st.markdown(f'<div class="panel-header">EXPECTED {horizon_months}M RETURNS & STRATEGIC POSITIONING</div>', unsafe_allow_html=True)
@@ -1837,6 +1951,7 @@ def main():
                     width='stretch',
                     on_select='rerun',
                     selection_mode='single-row',
+                    key=f"df_selection_{asset}",
                     column_config={
                         'feature': st.column_config.TextColumn("Driver", width="medium"),
                         'Signal': st.column_config.TextColumn("Current Signal", width="small"),
@@ -1870,7 +1985,112 @@ def main():
                 st.plotly_chart(plot_variable_survival(stability_results_map, asset, descriptions), width='stretch')
 
     with tab3:
-        asset_to_plot = st.selectbox("Select Asset", ['EQUITY', 'BONDS', 'GOLD'])
+        # Filter toggle
+        filter_choice = st.radio(
+            "Filter Series by Asset Equation Influence:",
+            options=["ALL", "EQUITY", "BONDS", "GOLD"],
+            horizontal=True,
+            index=0,
+            help="Show all series or only those with non-zero predictive power for the selected asset.",
+            key="series_filter_radio"
+        )
+
+        # Load raw data and appendix
+        df_full, transform_codes = load_full_fred_md_raw()
+        appendix = load_fred_appendix()
+        
+        active_series = set()
+        if filter_choice != "ALL":
+            # Extract active features for the chosen asset from the stability results
+            active_features = stability_results_map[filter_choice].get('stable_features', [])
+            
+            # Map features (e.g., 'PAYEMS_level') back to original series names ('PAYEMS')
+            for feat in active_features:
+                for col in df_full.columns:
+                    if feat.startswith(col + "_") or feat == col:
+                        active_series.add(col)
+                        break
+        
+        if not df_full.empty:
+            # Group definitions from appendix
+            group_names = {
+                1: "Output and Income",
+                2: "Labor Market",
+                3: "Housing",
+                4: "Consumption, Orders and Inventories",
+                5: "Money and Credit",
+                6: "Interest Rates and Exchange Rates",
+                7: "Prices",
+                8: "Stock Market"
+            }
+            
+            # Map columns to groups (Case-Insensitive)
+            columns_by_group = {}
+            for col in df_full.columns:
+                group_id = 0
+                col_upper = col.upper()
+                if col_upper in appendix.index:
+                    try:
+                        group_val = appendix.loc[col_upper, 'group']
+                        group_id = int(group_val) if not isinstance(group_val, pd.Series) else int(group_val.iloc[0])
+                    except:
+                        pass
+                
+                if group_id not in columns_by_group:
+                    columns_by_group[group_id] = []
+                columns_by_group[group_id].append(col)
+                
+            sorted_groups = sorted(columns_by_group.keys())
+            
+            for g_id in sorted_groups:
+                # Filter columns in this group based on asset selection
+                group_cols = columns_by_group[g_id]
+                if filter_choice != "ALL":
+                    group_cols = [c for c in group_cols if c in active_series]
+                
+                if not group_cols:
+                    continue
+
+                # Standard FRED-MD groups are 1-8. Group 0 is for anything uncategorized.
+                if g_id == 0:
+                    g_name = "Uncategorized / Miscellaneous"
+                else:
+                    g_name = group_names.get(g_id, f"Group {g_id}")
+                
+                st.markdown(f'<div class="panel-header" style="font-size: 1rem; color: #ff6b35; border-bottom: 1px solid #2a2a2a; margin: 1.5rem 0 1rem 0;">GROUP {g_id}: {g_name.upper()}</div>', unsafe_allow_html=True)
+                
+                for col in group_cols:
+                    # Get description from appendix (Case-Insensitive)
+                    desc = col
+                    col_upper = col.upper()
+                    if col_upper in appendix.index:
+                        series_info = appendix.loc[col_upper]
+                        desc_str = series_info['description'] if isinstance(series_info, pd.Series) else series_info.iloc[0]['description']
+                        desc = f"{col}: {desc_str}"
+                    
+                    with st.expander(desc):
+                        tcode = 1
+                        if col in transform_codes.index:
+                            try:
+                                tcode = int(transform_codes[col])
+                            except:
+                                pass
+                        
+                        raw_data = df_full[col].dropna()
+                        trans_data = apply_transformation(raw_data, tcode).dropna()
+                        
+                        # Stats display
+                        st.plotly_chart(
+                            plot_fred_series(raw_data, f"RAW: {col}", "LEVEL DATA", is_transformed=False),
+                            width='stretch', config={'displayModeBar': False}
+                        )
+                        st.plotly_chart(
+                            plot_fred_series(trans_data, f"TRANSFORMED: {col}", get_transformation_label(tcode), is_transformed=True),
+                            width='stretch', config={'displayModeBar': False}
+                        )
+
+    with tab4:
+        asset_to_plot = st.selectbox("Select Asset", ['EQUITY', 'BONDS', 'GOLD'], key="backtest_asset_select")
         
         model_display_names = {
             'EQUITY': 'Random Forest (Non-Linear Ensemble)',
@@ -1918,7 +2138,7 @@ def main():
         else:
             st.warning("Insufficient data for Walk-Forward Backtest.")
 
-    with tab4:
+    with tab5:
         col_d1, col_d2 = st.columns(2)
         with col_d1:
             st.markdown("**Regime Indicators**")
