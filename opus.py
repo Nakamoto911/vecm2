@@ -1076,7 +1076,7 @@ def plot_rolling_correlation(feat_data: pd.DataFrame, asset_returns: pd.DataFram
 
 
 def plot_quintile_analysis(feat_data: pd.DataFrame, asset_returns: pd.DataFrame, 
-                           feat_name: str, asset: str) -> go.Figure:
+                           feat_name: str, asset: str, horizon_months: int = 12) -> go.Figure:
     """Group asset returns into quintiles based on driver values."""
     theme = create_theme()
     
@@ -1094,7 +1094,7 @@ def plot_quintile_analysis(feat_data: pd.DataFrame, asset_returns: pd.DataFrame,
     
     fig = px.bar(
         quintile_avg, x='Quintile', y=asset,
-        title=f"Quintile Analysis: {asset} Return by {feat_name} Bucket",
+        title=f"Quintile Analysis: {asset} {horizon_months}M Return by {feat_name} Bucket",
         color='Quintile',
         color_discrete_sequence=colors
     )
@@ -1107,13 +1107,14 @@ def plot_quintile_analysis(feat_data: pd.DataFrame, asset_returns: pd.DataFrame,
         height=350,
         showlegend=False,
         xaxis=dict(gridcolor='#1a1a1a', title=f"{feat_name} Quintiles"),
-        yaxis=dict(gridcolor='#1a1a1a', title='Avg Forward Return', tickformat='.1%')
+        yaxis=dict(gridcolor='#1a1a1a', title=f'Avg {horizon_months}M Forward Return', tickformat='.1%')
     )
     return fig
 
 
 def plot_combined_driver_analysis(feat_data: pd.DataFrame, asset_returns: pd.DataFrame, 
-                                  feat_name: str, asset: str, descriptions: dict = None, window: int = 60) -> go.Figure:
+                                  feat_name: str, asset: str, descriptions: dict = None, 
+                                  window: int = 60, horizon_months: int = 12) -> go.Figure:
     """Combined chart with shared X-axis: Top (Driver vs Asset), Bottom (Rolling Correlation)."""
     theme = create_theme()
     
@@ -1151,7 +1152,7 @@ def plot_combined_driver_analysis(feat_data: pd.DataFrame, asset_returns: pd.Dat
     fig.add_trace(go.Scatter(
         x=combined.index, y=asset_vals, name=asset,
         mode='lines', line=dict(color='#4da6ff', width=1.5),
-        hovertemplate="<b>" + asset + " Return</b>: %{y:.2%}<extra></extra>"
+        hovertemplate="<b>" + asset + f" {horizon_months}M Return</b>: %{y:.2%}<extra></extra>"
     ), row=1, col=1, secondary_y=True)
     
     # 2. Bottom Panel: Rolling Correlation
@@ -1182,7 +1183,7 @@ def plot_combined_driver_analysis(feat_data: pd.DataFrame, asset_returns: pd.Dat
     fig.update_xaxes(gridcolor='#1a1a1a', row=1, col=1)
     fig.update_xaxes(gridcolor='#1a1a1a', row=2, col=1)
     fig.update_yaxes(title_text=f"Macro: {feat_name}", gridcolor='#1a1a1a', row=1, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="Fwd Return", gridcolor='#1a1a1a', tickformat='.0%', row=1, col=1, secondary_y=True)
+    fig.update_yaxes(title_text=f"{horizon_months}M Fwd Return", gridcolor='#1a1a1a', tickformat='.0%', row=1, col=1, secondary_y=True)
     fig.update_yaxes(title_text=f"{window}M Correlation", gridcolor='#1a1a1a', range=[-1, 1], row=2, col=1)
     
     return fig
@@ -1265,7 +1266,8 @@ def plot_variable_survival(stability_results_map: dict, asset: str, descriptions
 def plot_backtest(actual_returns: pd.Series, 
                   predicted_returns: pd.Series,
                   confidence_lower: pd.Series,
-                  confidence_upper: pd.Series) -> go.Figure:
+                  confidence_upper: pd.Series,
+                  confidence_level: float = 0.90) -> go.Figure:
     """
     Plot predicted vs actual forward returns.
     """
@@ -1286,7 +1288,7 @@ def plot_backtest(actual_returns: pd.Series,
         line=dict(width=0),
         fill='tonexty',
         fillcolor='rgba(77, 166, 255, 0.2)',
-        name='90% CI'
+        name=f'{int(confidence_level*100)}% CI'
     ))
     
     # Predicted
@@ -1417,6 +1419,24 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded"
     )
+    
+    # Sidebar Configuration (Moved up for header visibility)
+    with st.sidebar:
+        st.markdown("""
+        <div style="padding: 1rem 0; border-bottom: 1px solid #2a2a2a; margin-bottom: 1rem;">
+            <span style="font-family: 'IBM Plex Mono'; font-size: 0.8rem; color: #ff6b35;">CONFIG</span>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        horizon_months = st.slider("Horizon (Months)", 3, 36, 12, help="Forward return horizon")
+        l1_ratio = st.slider("L1 Ratio", 0.1, 0.9, 0.5, 0.1, help="Elastic Net mixing parameter")
+        min_persistence = st.slider("Min Persistence", 0.3, 0.9, 0.6, 0.1, help="Feature selection threshold")
+        confidence_level = st.slider("Confidence Level", 0.80, 0.95, 0.90, 0.05)
+        estimation_window_years = st.slider("Estimation Window (Years)", 15, 35, 25)
+        
+        alert_threshold = st.slider("Alert Threshold", 1.0, 3.0, 2.0, 0.25)
+        risk_free_rate = st.sidebar.number_input("Risk-Free Rate (%)", 0.0, 10.0, 4.0) / 100
+    
     
     st.markdown("""
 <style>
@@ -1588,29 +1608,12 @@ def main():
 </style>
 """, unsafe_allow_html=True)
 
-    st.markdown("""
+    st.markdown(f"""
     <div class="header-container">
         <p class="header-title">◈ VECM STRATEGIC ALLOCATION</p>
-        <p class="header-subtitle">FORWARD RETURN PREDICTION · 12-MONTH HORIZON</p>
+        <p class="header-subtitle">FORWARD RETURN PREDICTION · {horizon_months}-MONTH HORIZON</p>
     </div>
     """, unsafe_allow_html=True)
-    
-    # Sidebar
-    with st.sidebar:
-        st.markdown("""
-        <div style="padding: 1rem 0; border-bottom: 1px solid #2a2a2a; margin-bottom: 1rem;">
-            <span style="font-family: 'IBM Plex Mono'; font-size: 0.8rem; color: #ff6b35;">CONFIG</span>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        horizon_months = st.slider("Horizon (Months)", 3, 36, 12, help="Forward return horizon")
-        l1_ratio = st.slider("L1 Ratio", 0.1, 0.9, 0.5, 0.1, help="Elastic Net mixing parameter")
-        min_persistence = st.slider("Min Persistence", 0.3, 0.9, 0.6, 0.1, help="Feature selection threshold")
-        confidence_level = st.slider("Confidence Level", 0.80, 0.95, 0.90, 0.05)
-        estimation_window_years = st.slider("Estimation Window (Years)", 15, 35, 25)
-        
-        alert_threshold = st.slider("Alert Threshold", 1.0, 3.0, 2.0, 0.25)
-        risk_free_rate = st.sidebar.number_input("Risk-Free Rate (%)", 0.0, 10.0, 4.0) / 100
     
     # Load data
     macro_data = load_fred_md_data()
@@ -1653,7 +1656,9 @@ def main():
             # Stability Selection (Full Sample Bootstrapping)
             stable_features, selection_probs = select_features_elastic_net(
                 y_asset.dropna(), 
-                X.loc[y_asset.dropna().index]
+                X.loc[y_asset.dropna().index],
+                threshold=min_persistence,
+                l1_ratio=l1_ratio
             )
             
             # Final Asset-Specific Estimation (Full Sample) - Use same min_train logic
@@ -1755,7 +1760,7 @@ def main():
     tab1, tab2, tab3, tab4 = st.tabs(["ALLOCATION", "STABLE DRIVERS", "BACKTEST", "DIAGNOSTICS"])
     
     with tab1:
-        st.markdown('<div class="panel-header">EXPECTED 12M RETURNS & STRATEGIC POSITIONING</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="panel-header">EXPECTED {horizon_months}M RETURNS & STRATEGIC POSITIONING</div>', unsafe_allow_html=True)
         
         # summary_panel
         summary_data = []
@@ -1791,7 +1796,7 @@ def main():
             """, unsafe_allow_html=True)
             
     with tab2:
-        st.markdown('<div class="panel-header">STABLE MACRO DRIVERS (PERSISTENCE > 60%)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="panel-header">STABLE MACRO DRIVERS (PERSISTENCE > {int(min_persistence*100)}%)</div>', unsafe_allow_html=True)
         for asset in ['EQUITY', 'BONDS', 'GOLD']:
             with st.expander(f"Drivers & Equation for {asset}", expanded=(asset=='EQUITY')):
                 # Display Equation / Summary
@@ -1813,7 +1818,7 @@ def main():
                     selected_feat = attr.iloc[row_idx]['feature']
                     
                     st.plotly_chart(
-                        plot_combined_driver_analysis(macro_features, y_forward, selected_feat, asset, descriptions),
+                        plot_combined_driver_analysis(macro_features, y_forward, selected_feat, asset, descriptions, horizon_months=horizon_months),
                         width='stretch'
                     )
 
@@ -1822,7 +1827,7 @@ def main():
                     with c1:
                         st.plotly_chart(plot_driver_scatter(macro_features, y_forward, selected_feat, asset, descriptions), width='stretch')
                     with c2:
-                        st.plotly_chart(plot_quintile_analysis(macro_features, y_forward, selected_feat, asset), width='stretch')
+                        st.plotly_chart(plot_quintile_analysis(macro_features, y_forward, selected_feat, asset, horizon_months=horizon_months), width='stretch')
                 
                 # Stability Boxplot
                 st.plotly_chart(plot_stability_boxplot(stability_results_map, asset, descriptions), width='stretch')
@@ -1857,10 +1862,11 @@ def main():
             
             # Plot
             fig_backtest = plot_backtest(
-                actual_oos, 
-                oos_results['predicted_return'], 
-                oos_results['lower_ci'], 
-                oos_results['upper_ci']
+                actual_returns=actual_oos, 
+                predicted_returns=oos_results['predicted_return'], 
+                confidence_lower=oos_results['lower_ci'], 
+                confidence_upper=oos_results['upper_ci'],
+                confidence_level=confidence_level
             )
             
             # Visual Cue: Update line style for OOS Prediction
