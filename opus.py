@@ -2002,8 +2002,15 @@ def main():
                 st.divider()
                 
                 attr = driver_attributions[asset]
+                # Filter for stable features only
+                stable_feats = stability_results_map[asset].get('stable_features', [])
+                attr = attr[attr['feature'].isin(stable_feats)].copy()
+                # Add absolute impact for sorting if needed, but we keep Impact column
+                attr['AbsImpact'] = attr['Impact'].abs()
+                attr = attr.sort_values('AbsImpact', ascending=False)
+
                 selection = st.dataframe(
-                    attr[['feature', 'Signal', 'Weight', 'State', 'Link']], 
+                    attr[['feature', 'Signal', 'Impact', 'Weight', 'State', 'Link']], 
                     hide_index=True, 
                     width='stretch',
                     on_select='rerun',
@@ -2012,6 +2019,7 @@ def main():
                     column_config={
                         'feature': st.column_config.TextColumn("Driver", width="medium"),
                         'Signal': st.column_config.TextColumn("Current Signal", width="small"),
+                        'Impact': st.column_config.NumberColumn("Impact", format="%.4f", help="Total contribution (Weight * State)"),
                         'Weight': st.column_config.NumberColumn("Weight", format="%.3f", help="Predictive impact of the driver"),
                         'State': st.column_config.NumberColumn("State (Z)", format="%.2f", help="Current Z-score of the macro driver"),
                         'Link': st.column_config.NumberColumn("Link (Corr)", format="%.2f", help="Historical correlation with asset returns")
@@ -2042,31 +2050,48 @@ def main():
                 st.plotly_chart(plot_variable_survival(stability_results_map, asset, descriptions), width='stretch')
 
     with tab3:
-        # Filter toggle
-        filter_choice = st.radio(
-            "Filter Series by Asset Equation Influence:",
-            options=["ALL", "EQUITY", "BONDS", "GOLD"],
-            horizontal=True,
-            index=0,
-            help="Show all series or only those with non-zero predictive power for the selected asset.",
-            key="series_filter_radio"
-        )
+        # Checkbox filters for impactful series
+        st.markdown("**Display series with high impact on:**")
+        cols = st.columns(4)
+        with cols[0]:
+            f_equity = st.checkbox("Equity", value=False, key="check_equity")
+        with cols[1]:
+            f_bonds = st.checkbox("Bonds", value=False, key="check_bonds")
+        with cols[2]:
+            f_gold = st.checkbox("Gold", value=False, key="check_gold")
+        with cols[3]:
+            f_all = st.checkbox("Show All", value=not (f_equity or f_bonds or f_gold), key="check_all")
 
         # Load raw data and appendix
         df_full, transform_codes = load_full_fred_md_raw()
         appendix = load_fred_appendix()
         
         active_series = set()
-        if filter_choice != "ALL":
-            # Extract active features for the chosen asset from the stability results
-            active_features = stability_results_map[filter_choice].get('stable_features', [])
-            
-            # Map features (e.g., 'PAYEMS_level') back to original series names ('PAYEMS')
-            for feat in active_features:
-                for col in df_full.columns:
-                    if feat.startswith(col + "_") or feat == col:
-                        active_series.add(col)
-                        break
+        
+        # If any specific asset is checked, we identify the top 10 impactful stable drivers
+        selected_assets = []
+        if f_equity: selected_assets.append('EQUITY')
+        if f_bonds: selected_assets.append('BONDS')
+        if f_gold: selected_assets.append('GOLD')
+
+        if selected_assets and not f_all:
+            for asset in selected_assets:
+                attr = driver_attributions[asset]
+                stable_feats = stability_results_map[asset].get('stable_features', [])
+                # Only stable features
+                stable_attr = attr[attr['feature'].isin(stable_feats)].copy()
+                # Sort by absolute impact and take top 10
+                stable_attr['AbsImpact'] = stable_attr['Impact'].abs()
+                top_impactful = stable_attr.sort_values('AbsImpact', ascending=False).head(10)['feature'].tolist()
+                
+                # Map features (e.g., 'PAYEMS_level') back to original series names ('PAYEMS')
+                for feat in top_impactful:
+                    for col in df_full.columns:
+                        if feat.startswith(col + "_") or feat == col:
+                            active_series.add(col)
+                            break
+        else:
+            active_series = set(df_full.columns)
         
         if not df_full.empty:
             # Group definitions from appendix
@@ -2100,10 +2125,9 @@ def main():
             sorted_groups = sorted(columns_by_group.keys())
             
             for g_id in sorted_groups:
-                # Filter columns in this group based on asset selection
+                # Filter columns in this group based on active series selection
                 group_cols = columns_by_group[g_id]
-                if filter_choice != "ALL":
-                    group_cols = [c for c in group_cols if c in active_series]
+                group_cols = [c for c in group_cols if c in active_series]
                 
                 if not group_cols:
                     continue
