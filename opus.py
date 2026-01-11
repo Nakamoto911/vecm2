@@ -2084,41 +2084,72 @@ def main():
         df_full, transform_codes = load_full_fred_md_raw()
         appendix = load_fred_appendix()
         
-        active_series = {} # series_name -> max_abs_importance (Weight)
+        active_series = {} # fred_md_symbol -> max_abs_importance (Weight)
         
-        # If any specific asset is checked, we identify the top impactful stable drivers
-        selected_assets = []
-        if f_equity: selected_assets.append('EQUITY')
-        if f_bonds: selected_assets.append('BONDS')
-        if f_gold: selected_assets.append('GOLD')
+        # Robust mapping from model core names back to FRED-MD raw symbols
+        name_to_fred = {
+            'PAYEMS': 'PAYEMS',
+            'UNRATE': 'UNRATE',
+            'INDPRO': 'INDPRO',
+            'CAPACITY': 'CUMFNS',
+            'CPI': 'CPIAUCSL',
+            'PPI': 'WPSFD49207',
+            'PCE': 'PCEPI',
+            'FEDFUNDS': 'FEDFUNDS',
+            'GS10': 'GS10',
+            'HOUST': 'HOUST',
+            'M2': 'M2SL'
+        }
+        # Reverse mapping for display
+        fred_to_name = {v: k for k, v in name_to_fred.items()}
+        fred_to_name.update({'BAA': 'BAA', 'AAA': 'AAA'})
+
+        # Longest names first to ensure correct prefix matching
+        target_names = sorted(list(name_to_fred.keys()) + ['SPREAD', 'BAA_AAA'], key=len, reverse=True)
+        
+        # If any specific asset is checked, we identify the top impactful drivers
+        selected_assets = [a for a in ['EQUITY', 'BONDS', 'GOLD'] if (f_equity if a=='EQUITY' else f_bonds if a=='BONDS' else f_gold)]
 
         if selected_assets:
             for asset in selected_assets:
-                attr = driver_attributions[asset]
-                stable_feats = stability_results_map[asset].get('stable_features', [])
-                # Only stable features
-                stable_attr = attr[attr['feature'].isin(stable_feats)].copy()
-                # Sort by absolute weight (Feature Importance)
-                stable_attr['AbsWeight'] = stable_attr['Weight'].abs()
+                attr = driver_attributions[asset].copy()
+                # We use ALL features from attributions to match the bullet points (which include all top imports)
+                attr['AbsWeight'] = attr['Weight'].abs()
                 
-                # Take all drivers for that asset and update their max importance
-                for _, row in stable_attr.iterrows():
+                # Map each feature back to one or more FRED-MD series
+                for _, row in attr.iterrows():
                     feat = row['feature']
                     weight = row['AbsWeight']
                     
-                    # Map feature back to original series name
-                    for col in df_full.columns:
-                        if feat.startswith(col + "_") or feat == col:
+                    # Identify base model name (e.g., HOUST_MA60 -> HOUST)
+                    base_name = None
+                    for tn in target_names:
+                        if feat == tn or feat.startswith(tn + "_"):
+                            base_name = tn
+                            break
+                    
+                    if not base_name: 
+                        base_name = feat.split('_')[0]
+
+                    # Map to FRED-MD symbols
+                    fred_cols = []
+                    if base_name == 'SPREAD': fred_cols = ['GS10', 'FEDFUNDS']
+                    elif base_name == 'BAA_AAA': fred_cols = ['BAA', 'AAA']
+                    else: fred_cols = [name_to_fred.get(base_name, base_name)]
+                    
+                    for col in fred_cols:
+                        if col in df_full.columns:
+                            # Maintain the maximum weight encountered for this series
                             if col not in active_series or weight > active_series[col]:
                                 active_series[col] = weight
-                            break
-            # Sort by absolute weight and take top 15
+            
+            # Sort by absolute weight (decreasing) and take top 15
             sorted_by_importance = sorted(active_series.items(), key=lambda x: x[1], reverse=True)
             sorted_series = [s[0] for s in sorted_by_importance[:15]]
         else:
-            # Sort all available series alphabetically
+            # If no asset selected, show all alphabetically
             sorted_series = sorted(list(df_full.columns))
-        
+
         if not df_full.empty and sorted_series:
             num_series = len(sorted_series)
             
@@ -2161,11 +2192,13 @@ def main():
                     desc_str = series_info['description'] if isinstance(series_info, pd.Series) else series_info.iloc[0]['description']
                     desc = f"{col}: {desc_str}"
                 
+                # Use display name if available (e.g. PPI instead of WPSFD49207)
+                display_name = fred_to_name.get(col, col)
+                
                 # Append transformation to name if in Transformed/Normalized mode
-                display_name = col
                 if display_mode in ["Transformed", "Normalized"]:
                     label = TRANSFORMATION_LABELS.get(tcode, "Unknown")
-                    display_name = f"{col} ({label})"
+                    display_name = f"{display_name} ({label})"
                     if display_mode == "Normalized":
                         display_name += " [Z]"
 
