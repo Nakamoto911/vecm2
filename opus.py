@@ -1646,7 +1646,7 @@ def main():
     
     # 2. Main Analysis Loop per Asset
     for asset in ['EQUITY', 'BONDS', 'GOLD']:
-        with st.status(f"Analyzing {asset}...", expanded=False):
+        with st.spinner(f"Analyzing {asset}..."):
             y_asset = y[asset]
             
             # Stability Analysis (Rolling Windows)
