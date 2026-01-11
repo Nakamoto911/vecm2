@@ -1781,8 +1781,14 @@ def main():
                 st.plotly_chart(plot_variable_survival(stability_results_map, asset, descriptions), width='stretch')
 
     with tab3:
-        st.markdown('<div class="panel-header">HISTORICAL BACKTEST (WALK-FORWARD OOS)</div>', unsafe_allow_html=True)
         asset_to_plot = st.selectbox("Select Asset", ['EQUITY', 'BONDS', 'GOLD'])
+        
+        model_display_names = {
+            'EQUITY': 'Random Forest (Non-Linear Ensemble)',
+            'BONDS': 'ElasticNetCV (Regularized Linear)',
+            'GOLD': 'Simple OLS (Linear Regression)'
+        }
+        st.info(f"Target Architecture: **{model_display_names.get(asset_to_plot)}** | Training Window: **240 Months**")
         
         # Run Walk-Forward Backtest (Cached)
         with st.spinner(f"Running Walk-Forward Backtest for {asset_to_plot}..."):
@@ -1823,15 +1829,23 @@ def main():
             st.warning("Insufficient data for Walk-Forward Backtest.")
 
     with tab4:
-        st.markdown('<div class="panel-header">DIAGNOSTICS & PARAMETERS</div>', unsafe_allow_html=True)
         col_d1, col_d2 = st.columns(2)
         with col_d1:
             st.markdown("**Regime Indicators**")
             st.dataframe(pd.DataFrame([{'Indicator': k, 'Value': v} for k,v in stress_indicators.items()]), hide_index=True)
         with col_d2:
-            st.markdown("**Model Details**")
+            st.markdown("**Best-in-Class Models**")
+            model_info = {
+                'EQUITY': 'Random Forest Regressor (Non-Linear Ensemble)',
+                'BONDS': 'ElasticNetCV (L1/L2 Regularized Linear)',
+                'GOLD': 'Simple OLS (Ordinary Least Squares)'
+            }
             for asset in ['EQUITY', 'BONDS', 'GOLD']:
-                st.text(f"{asset} Model: {len(stability_results_map[asset]['stable_features'])} drivers selected.")
+                m_type = model_info.get(asset, "Unknown")
+                n_feats = len(stability_results_map[asset]['stable_features'])
+                st.markdown(f"**{asset}**")
+                st.markdown(f"- Architecture: `{m_type}`")
+                st.markdown(f"- Features: `{n_feats}` macro drivers utilized")
         
         st.divider()
         st.markdown("**Feature Selection Persistence**")
