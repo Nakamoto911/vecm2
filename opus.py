@@ -1321,6 +1321,52 @@ def plot_backtest(actual_returns: pd.Series,
     return fig
 
 
+def construct_model_summary(asset: str, model_stats: dict) -> str:
+    """
+    Constructs a readable summary of the model (Equation or Feature Importance).
+    """
+    if asset not in model_stats:
+        return "Model details not available."
+    
+    m_info = model_stats[asset]
+    
+    if asset == 'EQUITY':
+        # Random Forest: Show Feature Importance
+        importance = m_info.get('importance', pd.Series())
+        if importance.empty:
+            return "Non-linear Ensemble (Random Forest). Variable sensitivities are dynamic."
+        
+        top_5 = importance.sort_values(ascending=False).head(5)
+        summary = "**Architecture: Random Forest (Non-Linear Ensemble)**\n\n"
+        summary += "Top Predictive Drivers (Feature Importance):\n"
+        for feat, imp in top_5.items():
+            summary += f"- {feat}: `{imp:.4f}`\n"
+        return summary
+    
+    else:
+        # Linear Models (BONDS, GOLD): Show Equation
+        intercept = m_info.get('intercept', 0)
+        coefs = m_info.get('coefficients', pd.Series())
+        
+        if coefs.empty:
+            return "Linear Model. Coefficients not available."
+        
+        # Filter significant coefficients (|coef| > 1e-6)
+        sig_coefs = coefs[coefs.abs() > 1e-6]
+        if 'const' in sig_coefs:
+            sig_coefs = sig_coefs.drop('const')
+            
+        arch_name = "ElasticNet (Regularized Linear)" if asset == 'BONDS' else "Simple OLS (Linear Regression)"
+        equation = f"**Architecture: {arch_name}**\n\n"
+        equation += f"Predicted Return = `{intercept:.4f}`"
+        
+        for feat, val in sig_coefs.items():
+            sign = "+" if val >= 0 else "-"
+            equation += f" {sign} (`{abs(val):.4f}` * {feat})"
+            
+        return equation
+
+
 def generate_narrative(expected_returns: dict,
                        driver_attributions: dict,
                        regime_status: str) -> str:
@@ -1747,7 +1793,11 @@ def main():
     with tab2:
         st.markdown('<div class="panel-header">STABLE MACRO DRIVERS (PERSISTENCE > 60%)</div>', unsafe_allow_html=True)
         for asset in ['EQUITY', 'BONDS', 'GOLD']:
-            with st.expander(f"Drivers for {asset}", expanded=(asset=='EQUITY')):
+            with st.expander(f"Drivers & Equation for {asset}", expanded=(asset=='EQUITY')):
+                # Display Equation / Summary
+                st.markdown(construct_model_summary(asset, model_stats))
+                st.divider()
+                
                 attr = driver_attributions[asset]
                 selection = st.dataframe(
                     attr, 
