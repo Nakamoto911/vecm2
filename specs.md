@@ -1,150 +1,102 @@
-# Strategic Memo: High-Dimensional Adaptive Sparse Elastic Net VECM
+# Strategic Memo: Macro-Driven Strategic Asset Allocation System
 
-## Investment Horizon: 5 to 10 years
+## Investment Horizon: 12 Months (Rolling)
 
-**Target Assets:** US Equities / Bonds / Gold
-
-**Methodology:** Adaptive Sparse VECM with Elastic Net, Kernel Dictionary, and High-Frequency Nowcasting Overlay
+**Target Assets:** US Equities (S&P 500) / US Bonds (10Y Treasury) / Gold
+**Methodology:** Direct Forward Return Prediction via Asset-Specific Machine Learning & Stability Selection
 
 ---
 
 ## 1. Objective of the Approach
 
-The primary objective of this approach is capital preservation while targeting systematically superior returns to the risk-free rate. The strategy is calibrated to generate target returns between 5% and 10% annually, with rigorous management constraints:
-
-**Light Management and Minimal Rotation:** The strategy favors a dynamic "buy-and-hold" approach. Portfolio rebalancing occurs on a quarterly basis to limit transaction costs and tax impact.
-
-**Flexibility in Crisis Situations:** As an exception to the quarterly rule, the model can trigger immediate rotation if the "Nowcasting" module detects a structural break or imminent systemic risk.
-
-**Minimal Volatility and Limited Drawdowns:** Optimization of allocation to smooth the return curve and early identification of reversal risks to minimize maximum losses.
-
-The success of this management relies on identifying the economic cycle, defined by the interaction between long-term movements (levels) and short-term movements (variations).
+The primary objective is to generate superior risk-adjusted returns by predicting **annualized 12-month forward returns** for major asset classes. The system utilizes a systematic, data-driven framework to map current macroeconomic states directly to future asset performance ($X_t \rightarrow Y_{t+12}$), prioritizing statistical stability and capital preservation over complexity.
 
 ---
 
-## 2. Architecture of the Temporal Kernel Dictionary
+## 2. Asset-Specific Model Architectures
 
-To capture cycles without rigidity, the model uses Temporal Kernels:
+The system employs "Best-in-Class" modeling architectures tailored to the specific statistical properties and economic drivers of each asset class:
 
-**Lags 1 to 6:** Dense structure for immediate reactivity (essential for crisis detection).
-
-**Anchors 12, 24, 36, 48, 60:** Gaussian-weighted averages to capture cyclical shock waves without information "black holes."
-
----
-
-## 3. Complementary Module: High-Frequency Nowcasting Overlay
-
-This module acts as a tactical emergency brake. It monitors daily market stress to cut risk exposure before VECM macroeconomic data confirms the crisis.
-
-### A. Stress Indicators (HF Inputs)
-
-**Credit (HY-IG Spread):** Rate spread between risky and solid companies. A sharp widening warns of increased default risk.
-
-**Fear (VIX Structure):** VIX / VIX3M ratio. A shift into Backwardation (VIX > VIX3M) signals immediate panic.
-
-**Liquidity (DXY & 10-Year Rates):** Simultaneous increases in the Dollar and real rates signal global liquidity tightening.
-
-### B. Composite Stress Index (CSI)
-
-Variables are normalized into Z-Scores ($Z_t$) over 12 months.
-
-$$CSI_t = 0.4 \cdot Z_{Credit} + 0.4 \cdot Z_{Vol} + 0.2 \cdot Z_{Liquidity}$$
-
-### C. Decision Matrix (Overlay)
-
-| VECM Signal (Macro) | Nowcast Signal (HF Stress) | Strategic Action |
+| Asset Class | Model Architecture | Rationale |
 |---|---|---|
-| Bullish (Bull) | Calm | 100% Target Exposure. |
-| Bullish (Bull) | High Stress | Tactical Hedge: Reduce exposure by 50%. |
-| Bearish (Bear) | Calm | Progressive Exit: Sell on bounces. |
-| Bearish (Bear) | High Stress | Full Defense: 100% Cash / Gold / Short-term Bonds. |
+| **US Equities** | **Random Forest Regressor** | **Non-Linear Ensemble.** Captures complex, regime-dependent interactions (e.g., asymmetric market reactions to rate hikes) that linear models often miss. Configured with depth constraints to prevent overfitting. |
+| **US Bonds** | **ElasticNetCV** | **Regularized Linear.** Bond yields typically exhibit linear relationships with fundamental drivers (Growth, Inflation) but require L1/L2 regularization to handle collinear macroeconomic inputs. |
+| **Gold** | **Simple OLS** | **Parsimonious Linear.** mode Gold is modeled using a transparent linear relationship with real rates and currency drivers to ensure robustness. |
 
 ---
 
-## 4. Algorithm Steps
+## 3. Feature Engineering & State Space
 
-**Step 1: Ingestion and Preprocessing**
+The model ingests raw macroeconomic data and transforms it into a "Current State" matrix ($X_t$) using stationary statistical transformations:
 
-Load FRED-MD (monthly) and market data (daily). Apply log-level and difference transformations.
+**Transformation Pipeline:**
+1.  **Trend:** 12-month and 60-month moving averages to capture medium and long-term cycles.
+2.  **Cyclical Position (Z-Score):** Deviation from the 5-year mean, normalized by 5-year volatility.
+    * *Formula:* $Z_t = \frac{X_t - \mu_{60}}{\sigma_{60}}$
+3.  **Historical Rank:** Rolling 10-year percentile rank (0 to 1) to contextualize current values against historical extremes.
+4.  **Momentum (Slope):** Normalized rate of change over 12 and 60 months.
 
-Output: Cleaned dataset, separated into levels ($y_t$) and variations ($\Delta y_t$).
-
-**Step 2: Daily Nowcasting Check**
-
-Calculate the Composite Stress Index (CSI) daily.
-
-Output: "Sentinel" status (Alert or Calm) dictating maintenance or reduction of exposure.
-
-**Step 3: Cointegration Rank Identification**
-
-Weighted Johansen test on level variables to identify long-term equilibrium.
-
-Output: Rank $r$ and cointegration vectors $\beta$ (definition of equilibrium value).
-
-**Step 4: Estimation via Adaptive Elastic Net**
-
-Generate final predictive equations by applying dual penalty (L1/L2) on variations filtered by kernels.
-
-Output: Stable equations and Heatmap of coefficients $\Gamma$ (isolates current active drivers).
-
-**Step 5: Extraction of Error Correction Term (ECT)**
-
-Calculate $ECT_t = \beta' y_{t-1}$. Measure of deviation from macroeconomic fair value.
-
-Output: Imbalance score (Error Term) indicating the strength of pull back to equilibrium.
-
-**Step 6: Signal Generation and Rebalancing**
-
-Quarterly synthesis (or immediate in case of Nowcast alert) to adjust allocation.
-
-Output: List of orders and new target portfolio weights.
+**Data Hygiene:**
+* **Winsorization:** All input features are capped at **±3.0 Standard Deviations** to mitigate the impact of outliers and structural breaks (e.g., pandemic-era data distortions).
 
 ---
 
-## 5. Stability and Storytelling (Group Effect)
+## 4. Stability Selection (Feature Selection)
 
-The use of Elastic Net ensures that the economic "narrative" remains coherent:
+To ensure trading signals are based on persistent economic drivers rather than noise, the system employs a **Stability Selection** phase prior to final estimation:
 
-**Temporal Coherence:** Avoids jumping from one variable to another month to month, reducing unnecessary turnover.
-
-**Grouped Variables:** Signal confirmation through coherent blocks (e.g., the "Labor Market" block is selected in its entirety).
-
----
-
-## 6. Cycle Signatures (Example of Algorithm Output)
-
-| Block / Module | Grouped Variables Selected | Status / Regime | Strategic Interpretation |
-|---|---|---|---|
-| Nowcast (HF) | HY-IG Spread & VIX | Calm | No immediate liquidity stress. |
-| Labor (Macro) | PAYEMS & USPRIV (Employment) | Plateauing | Late-cycle expansion detected. |
-| Output (Macro) | INDPRO & IPFINAL (Production) | Slowdown | Convergence of production indicators. |
-| Prices (Macro) | CPI & PPI (Inflation) | "Sticky" | Persistent inflationary pressures. |
+1.  **Bootstrapping:** The algorithm executes multiple iterations (e.g., 50+) of regularized regression on random subsets of the data.
+2.  **Persistence Scoring:** It calculates a probability score for each variable based on how frequently it is selected with a non-zero coefficient.
+3.  **Filtering:** Only features exceeding a defined **Persistence Threshold** (default 0.6) are retained for the final prediction model.
 
 ---
 
-## 7. Validation Protocol and Resilience
+## 5. Risk Management: Regime Overlay
 
-**Hyperparameter Optimization:** Choice of L1/L2 ratio to favor selection stability (Ridge-heavy) over extreme sparsity.
+A "Nowcasting" module monitors high-frequency financial stress to adjust portfolio beta dynamically.
 
-**Cointegration Monitoring:** In case of major $\beta$ instability (structural break), the model switches to "Preservation" mode (Gold/Cash) until the next stabilization cycle.
+### A. Stress Inputs
+1.  **Credit Stress:** BAA-AAA Corporate Bond Spread (Normalized Z-Score).
+2.  **Yield Curve Stress:** 10Y Treasury minus Fed Funds Rate (Inverted Z-Score).
 
----
-
-## 8. Data Universe & Statistics
-
-### A. Macroeconomic Data (FRED-MD)
-
-* **Source:** St. Louis Fed FRED-MD Database.
-* **Universe:** 128 monthly macroeconomic variables categorized into 8 blocks (Output, Labor, Housing, Consumption, Money, Interest Rates, Prices, Stock Market).
-* **Coverage:** Jan 1959 to Oct 2025 (latest available in `2025-11-MD.csv`).
-* **Preprocessing:** Log-level transformation and differencing based on McCracken & Ng (2016) codes.
-
-### B. Strategic Asset Data (Spliced History)
-
-* **US Equities (EQUITY):** S&P 500 Index. Sourced from FRED-MD (long history since 1959).
-* **Gold (GOLD):** Composite history splicing Precious Metals PPI (FRED: WPU057301, 1960), Gold Import Price Index (FRED: IR14420, 1993), and GLD ETF (Yahoo Finance, 2004).
-* **US Bonds (BONDS):** Total Return 10-Year Treasuries. Sourced from FRED (GS10) and Yahoo Finance (IEF). Synthetic history is generated by approximating total returns from Constant Maturity yields: $R_{t} \approx -D \cdot \Delta y_{t} + y_{t-1}/12$ (with duration $D=7.5$), spliced with IEF ETF returns since 2002.
+### B. Regime Logic
+* **Composite Stress Score:** $0.5 \cdot Z_{Credit} + 0.5 \cdot Z_{Curve}$
+* **Operational States:**
+    * **CALM:** Stress Score < 1.2 (Full Target Exposure)
+    * **WARNING:** 1.2 < Stress Score < 2.0 (Defensive Tilt)
+    * **ALERT:** Stress Score > 2.0 (Significant Risk Reduction)
 
 ---
 
-**Final Note:** The model prioritizes *stability* over *frenetic trading*. Every signal is cross-validated through the cointegration vector ($\beta$) and the short-term dynamics ($\Gamma$).
+## 6. Strategic Allocation Logic
+
+Portfolio weights are derived dynamically based on the interplay between expected returns and the market regime.
+
+* **Base Allocation:** Equity 60% / Bonds 30% / Gold 10%.
+* **Return Tilt:** Weights are adjusted upward or downward based on the magnitude of the predicted excess return relative to the Risk-Free Rate.
+* **Regime Multiplier:** In "Alert" regimes, Equity exposure is forcibly reduced (e.g., -50%), with capital rotated into defensive assets (Bonds/Gold).
+* **Hard Constraints:**
+    * Equity: 20% - 80%
+    * Bonds: 20% - 50%
+    * Gold: 5% - 25%
+
+---
+
+## 7. Data Universe
+
+* **Macroeconomic Data:** FRED-MD Database (approx. 128 monthly series covering Output, Labor, Housing, Money, and Prices).
+* **Asset Pricing:**
+    * **Equities:** S&P 500 Index.
+    * **Bonds:** Synthetic Total Return Index derived from **GS10** (10-Year Constant Maturity Yield) assuming a constant duration ($D=7.5$).
+    * **Gold:** Composite history splicing Producer Price Index (PPI) for Precious Metals with ETF data.
+
+---
+
+## 8. Validation Protocol
+
+The strategy is validated using a **Purged Walk-Forward Backtest** to simulate realistic historical performance:
+
+* **Training Window:** Expanding window with a minimum of 240 months (20 years).
+* **Forecasting Horizon:** 12 Months.
+* **Leakage Prevention (Purging):** The training set explicitly excludes the 12 months immediately preceding the test date to ensure no future data is used in model training.
+* **Performance Metrics:** Out-of-Sample (OOS) RMSE and Information Coefficient (IC).
