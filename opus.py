@@ -2216,9 +2216,19 @@ def main():
                     row=row, col=1
                 )
                 
-                # Add Internal Title (Annotation)
+                # Get plain description for annotation
+                plain_desc = ""
+                if col.upper() in appendix.index:
+                    series_info = appendix.loc[col.upper()]
+                    plain_desc = series_info['description'] if isinstance(series_info, pd.Series) else series_info.iloc[0]['description']
+
+                # Add Internal Title (Annotation) with Description
+                annotation_text = f"<b>{display_name}</b>"
+                if plain_desc:
+                    annotation_text += f": {plain_desc}"
+
                 fig.add_annotation(
-                    text=f"<b>{display_name}</b>",
+                    text=annotation_text,
                     xref=f"x{row if row > 1 else ''} domain", yref=f"y{row if row > 1 else ''} domain",
                     x=0.01, y=0.95,
                     showarrow=False,
