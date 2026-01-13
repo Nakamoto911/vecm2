@@ -2062,11 +2062,6 @@ def main():
                     with c2:
                         st.plotly_chart(plot_quintile_analysis(macro_features, y_forward, selected_feat, asset, horizon_months=horizon_months), width='stretch')
                 
-                # Stability Boxplot
-                st.plotly_chart(plot_stability_boxplot(stability_results_map, asset, descriptions), width='stretch')
-
-                # Step 3: Survival Leaderboard
-                st.plotly_chart(plot_variable_survival(stability_results_map, asset, descriptions), width='stretch')
 
     with tab3:
         # Asset and Display Mode Selection on a single row
@@ -2359,23 +2354,33 @@ def main():
                 st.markdown(f"- Features: `{n_feats}` macro drivers utilized")
         
         st.divider()
-        st.markdown("**Feature Selection Persistence**")
-        asset_heatmap = st.selectbox("Select Asset for Heatmap", ['EQUITY', 'BONDS', 'GOLD'], key='heatmap_asset')
+        st.markdown("**Model Stability & Feature Selection Persistence**")
         
-        with st.spinner(f"Loading selection history for {asset_heatmap}..."):
-            _, selection_df = cached_walk_forward(
-                y[asset_heatmap], 
-                X, 
-                min_train_months=240, 
-                horizon_months=horizon_months, 
-                rebalance_freq=12,
-                asset_class=asset_heatmap
-            )
-            
-        if not selection_df.empty:
-            st.plotly_chart(plot_feature_heatmap(selection_df, descriptions), width='stretch')
-        else:
-            st.info("No selection history available for this asset.")
+        for asset in ['EQUITY', 'BONDS', 'GOLD']:
+            with st.expander(f"Diagnostics for {asset}", expanded=(asset == 'EQUITY')):
+                with st.spinner(f"Loading diagnostics for {asset}..."):
+                    _, selection_df = cached_walk_forward(
+                        y[asset], 
+                        X, 
+                        min_train_months=240, 
+                        horizon_months=horizon_months, 
+                        rebalance_freq=12,
+                        asset_class=asset
+                    )
+                    
+                if not selection_df.empty:
+                    st.markdown("### Feature Selection Persistence")
+                    st.plotly_chart(plot_feature_heatmap(selection_df, descriptions), width='stretch', key=f"heatmap_{asset}")
+                    
+                    st.divider()
+                    st.markdown("### Stability Analysis")
+                    # Stability Boxplot
+                    st.plotly_chart(plot_stability_boxplot(stability_results_map, asset, descriptions), width='stretch', key=f"boxplot_{asset}")
+
+                    # Variable Survival Leaderboard
+                    st.plotly_chart(plot_variable_survival(stability_results_map, asset, descriptions), width='stretch', key=f"survival_{asset}")
+                else:
+                    st.info(f"No diagnostic data available for {asset}.")
         
         if st.button("Export Results Summary"):
             summary_df = pd.DataFrame(summary_data)
