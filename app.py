@@ -2155,7 +2155,8 @@ def main():
             sorted_series = sorted(list(df_full.columns))
 
         if not df_full.empty and sorted_series:
-            num_series = len(sorted_series)
+            has_assets = len(selected_assets) > 0
+            num_series = len(sorted_series) + (1 if has_assets else 0)
             
             # Create subplots with ABSOLUTE zero spacing and no external titles
             fig = make_subplots(
@@ -2165,8 +2166,54 @@ def main():
                 vertical_spacing=0 # True zero spacing for a contiguous vertical area
             )
             
+            start_row = 1
+            if has_assets:
+                start_row = 2
+                # Add asset return trace(s) at row 1
+                for asset in selected_assets:
+                    asset_data = y[asset].dropna()
+                    
+                    # Use unique colors for assets to distinguish from macro
+                    asset_color = '#ffffff' # White for high contrast
+                    if asset == 'EQUITY': asset_color = '#ffd700' # Gold
+                    elif asset == 'BONDS': asset_color = '#00ffff' # Cyan
+                    elif asset == 'GOLD': asset_color = '#ffffff' # White
+                    
+                    fig.add_trace(
+                        go.Scatter(
+                            x=asset_data.index, 
+                            y=asset_data.values,
+                            mode='lines',
+                            name=f"{asset} Ret",
+                            line=dict(color=asset_color, width=2),
+                            hovertemplate=f'<b>{asset} 12M Forward Return</b><br>%{{x|%b %Y}}<br>Return: %{{y:.2%}}<extra></extra>'
+                        ),
+                        row=1, col=1
+                    )
+                
+                fig.add_annotation(
+                    text=f"<b>ASSET 12M FORWARD RETURNS</b>",
+                    xref="x domain", yref="y domain",
+                    x=0.01, y=0.95,
+                    showarrow=False,
+                    font=dict(color='#ff6b35', size=11, family='IBM Plex Mono'),
+                    bgcolor='rgba(0,0,0,0.6)',
+                    bordercolor='#2a2a2a',
+                    borderwidth=1,
+                    align='left'
+                )
+                
+                # Add Recession Bands to row 1
+                for start, end in NBER_RECESSIONS:
+                    fig.add_vrect(
+                        x0=start, x1=end,
+                        fillcolor="#ffffff", opacity=0.07,
+                        layer="below", line_width=0,
+                        row=1, col=1
+                    )
+
             for i, col in enumerate(sorted_series):
-                row = i + 1
+                row = i + start_row
                 tcode = 1
                 if col in transform_codes.index:
                     try: tcode = int(transform_codes[col])
