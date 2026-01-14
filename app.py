@@ -2571,7 +2571,24 @@ def main():
                 sim_start, sim_end = None, None
 
             st.divider()
-            st.markdown(f"**3. {strategy_type} Parameters**")
+            st.markdown("**3. Asset Allocation Constraints**")
+            st.info("💡 Set the minimum and maximum percentage allowed for each asset class across the entire simulation.")
+            ac1, ac2, ac3 = st.columns(3)
+            with ac1:
+                st.markdown("**EQUITY**")
+                min_eq = st.slider("Min Eq %", 0, 100, 0, key="min_eq")
+                max_eq = st.slider("Max Eq %", 0, 100, 100, key="max_eq")
+            with ac2:
+                st.markdown("**BONDS**")
+                min_bond = st.slider("Min Bond %", 0, 100, 0, key="min_bond")
+                max_bond = st.slider("Max Bond %", 0, 100, 100, key="max_bond")
+            with ac3:
+                st.markdown("**GOLD**")
+                min_gold = st.slider("Min Gold %", 0, 100, 0, key="min_gold")
+                max_gold = st.slider("Max Gold %", 0, 100, 100, key="max_gold")
+
+            st.divider()
+            st.markdown(f"**4. {strategy_type} Parameters**")
             col_lab1, col_lab2 = st.columns(2)
             with col_lab1:
                 initial_capital = st.number_input("Initial Capital ($)", value=10000, step=1000)
@@ -2614,11 +2631,24 @@ def main():
         # Run Backtest
         if submitted:
             # Package all parameters
+            min_weights = {
+                'EQUITY': min_eq / 100.0,
+                'BONDS': min_bond / 100.0,
+                'GOLD': min_gold / 100.0
+            }
+            max_weights = {
+                'EQUITY': max_eq / 100.0,
+                'BONDS': max_bond / 100.0,
+                'GOLD': max_gold / 100.0
+            }
+
             full_params = {
                 'initial_capital': initial_capital,
                 'trading_cost_bps': trading_cost,
                 'rebalance_freq': rebalance_freq,
                 'risk_free_rate': risk_free_rate,
+                'min_weights': min_weights,
+                'max_weights': max_weights,
                 **params
             }
             

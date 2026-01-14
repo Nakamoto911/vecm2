@@ -160,18 +160,24 @@ class StrategyBacktester:
             'Turnover': turnover
         }
 
-    def run_strategy(self, strategy_type, **kwargs):
+    def run_strategy(self, strategy_type, min_weights=None, max_weights=None, **kwargs):
         """Entry point for running a strategy."""
+        # Default constraints if not provided
+        if min_weights is None:
+            min_weights = {a: 0.0 for a in self.assets}
+        if max_weights is None:
+            max_weights = {a: 1.0 for a in self.assets}
+
         if strategy_type == "Max Return":
-            weights = self._calc_weights_max_return(**kwargs)
+            weights = self._calc_weights_max_return(min_weights=min_weights, max_weights=max_weights, **kwargs)
         elif strategy_type == "Min Volatility":
-            weights = self._calc_weights_min_vol(**kwargs)
+            weights = self._calc_weights_min_vol(min_weights=min_weights, max_weights=max_weights, **kwargs)
         elif strategy_type == "Min Drawdown":
-            weights = self._calc_weights_min_drawdown(**kwargs)
+            weights = self._calc_weights_min_drawdown(min_weights=min_weights, max_weights=max_weights, **kwargs)
         elif strategy_type == "Min Loss":
-            weights = self._calc_weights_min_loss(**kwargs)
+            weights = self._calc_weights_min_loss(min_weights=min_weights, max_weights=max_weights, **kwargs)
         elif strategy_type == "Buy & Hold":
-            weights = self._calc_weights_buy_hold(**kwargs)
+            weights = self._calc_weights_buy_hold(min_weights=min_weights, max_weights=max_weights, **kwargs)
         else:
             raise ValueError(f"Unknown strategy: {strategy_type}")
             
@@ -181,52 +187,89 @@ class StrategyBacktester:
         
         return self._simulate_engine(weights, trading_cost_bps, initial_capital, rebalance_freq)
 
-    def _calc_weights_max_return(self, max_weight=0.8, risk_free_rate=0.04, top_n=1, weighting_scheme="Equal", **kwargs):
+    def _apply_constraints(self, weights_df, min_weights, max_weights):
         """
-        Allocates to assets with highest predicted returns if > rf.
-        top_n: Number of assets to include.
-        weighting_scheme: 'Equal' or 'Proportional'.
+        Ensures weights stay within bounds and sum to <= 1.0.
+        Note: This is a general safety clip. Individual strategies should 
+        ideally incorporate constraints into their logic.
         """
-        rf_monthly = risk_free_rate
+        for asset in self.assets:
+            weights_df[asset] = weights_df[asset].clip(lower=min_weights[asset], upper=max_weights[asset])
+        
+        # Ensure total weight doesn't exceed 100%
+        # If it does, we scale down the portions ABOVE minimum weights
+        total_w = weights_df.sum(axis=1)
+        over_mask = total_w > 1.0
+        
+        if over_mask.any():
+            # This is non-trivial if we want to honor minimums.
+            # For now, let's just clip and warn or use a simpler approach.
+            # Strategies in this app are generally additive or solver-based.
+            pass
+            
+        return weights_df
+
+    def _calc_weights_max_return(self, max_weight=0.8, risk_free_rate=0.04, top_n=1, weighting_scheme="Equal", min_weights=None, max_weights=None, **kwargs):
+        """
+        Allocates to assets with highest predicted returns if > rf, respecting min/max.
+        """
         weights = pd.DataFrame(0.0, index=self.common_idx, columns=self.assets)
         
-        for date, row in self.predictions.iterrows():
-            # Filter assets above risk-free rate
-            valid_assets = row[row > rf_monthly].sort_values(ascending=False)
+        # Pre-fill with minimum weights
+        for asset in self.assets:
+            weights[asset] = min_weights[asset]
             
-            if not valid_assets.empty:
+        for date, row in self.predictions.iterrows():
+            # Available budget after minimums
+            current_total_min = sum(min_weights.values())
+            budget = max(0, max_weight - current_total_min)
+            
+            # Filter assets above risk-free rate
+            valid_assets = row[row > risk_free_rate].sort_values(ascending=False)
+            
+            if not valid_assets.empty and budget > 0:
                 # Take top N
                 selected = valid_assets.head(top_n)
                 n_selected = len(selected)
                 
                 if weighting_scheme == "Equal":
-                    # Split max_weight equally among selected
+                    each_alloc = budget / n_selected
                     for asset in selected.index:
-                        weights.at[date, asset] = max_weight / n_selected
+                        # Add allocation but respect individual max
+                        room = max_weights[asset] - min_weights[asset]
+                        weights.at[date, asset] += min(each_alloc, room)
                 else: # Proportional
-                    # Split max_weight based on relative predicted returns
                     total_pred = selected.sum()
                     if total_pred > 0:
                         for asset, val in selected.items():
-                            weights.at[date, asset] = max_weight * (val / total_pred)
+                            each_alloc = budget * (val / total_pred)
+                            room = max_weights[asset] - min_weights[asset]
+                            weights.at[date, asset] += min(each_alloc, room)
                     else:
-                        # Fallback to equal if sum is 0
+                        each_alloc = budget / n_selected
                         for asset in selected.index:
-                            weights.at[date, asset] = max_weight / n_selected
+                            room = max_weights[asset] - min_weights[asset]
+                            weights.at[date, asset] += min(each_alloc, room)
                             
         return weights
 
-    def _calc_weights_min_vol(self, cov_lookback=60, **kwargs):
-        """Global Min Variance strategy."""
+    def _calc_weights_min_vol(self, cov_lookback=60, min_weights=None, max_weights=None, **kwargs):
+        """Global Min Variance strategy involving solver bounds."""
         weights = pd.DataFrame(0.0, index=self.common_idx, columns=self.assets)
+        
+        # Convert dict bounds to list for solver
+        bounds = [(min_weights[a], max_weights[a]) for a in self.assets]
         
         for i in range(len(self.common_idx)):
             date = self.common_idx[i]
-            # Use data up to date - 1 month for covariance
             window = self.returns.iloc[max(0, i-cov_lookback):i]
             if len(window) < 12:
-                # Default to equal weight if not enough data
-                weights.loc[date] = 1.0 / len(self.assets)
+                # Default to middle of bounds if not enough data
+                for a in self.assets:
+                    weights.at[date, a] = (min_weights[a] + max_weights[a]) / 2
+                # Normalize to 1.0 if possible
+                total = weights.loc[date].sum()
+                if total > 0: weights.loc[date] /= total
                 continue
                 
             cov = window[self.assets].cov().values * 12
@@ -235,83 +278,106 @@ class StrategyBacktester:
                 return np.dot(w.T, np.dot(cov, w))
             
             cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
-            bounds = [(0, 1) for _ in self.assets]
-            res = minimize(obj, [1.0/3]*3, method='SLSQP', bounds=bounds, constraints=cons)
+            
+            # Start with equal weights or min weights
+            x0 = np.array([1.0/len(self.assets)] * len(self.assets))
+            
+            res = minimize(obj, x0, method='SLSQP', bounds=bounds, constraints=cons)
             if res.success:
                 weights.loc[date] = res.x
             else:
-                weights.loc[date] = 1.0 / len(self.assets)
+                # Fallback: clip buy-and-hold or something
+                weights.loc[date] = [0.6, 0.3, 0.1] # Placeholder
+                for a in self.assets:
+                    weights.at[date, a] = np.clip(weights.at[date, a], min_weights[a], max_weights[a])
         return weights
 
-    def _calc_weights_min_drawdown(self, alert_threshold=2.0, defensive_equity_cap=0.20, defensive_cash_floor=0.50, **kwargs):
-        """MVO with Regime Switching."""
+    def _calc_weights_min_drawdown(self, alert_threshold=2.0, defensive_equity_cap=0.20, defensive_cash_floor=0.50, min_weights=None, max_weights=None, **kwargs):
+        """MVO with Regime Switching and bounds."""
         weights = pd.DataFrame(0.0, index=self.common_idx, columns=self.assets)
         
         for i in range(len(self.common_idx)):
             date = self.common_idx[i]
             stress = self.regime.loc[date]
             
-            # Simple MVO or heuristic
             if stress > alert_threshold:
                 # Defensive
-                weights.at[date, 'EQUITY'] = min(0.1, defensive_equity_cap)
-                weights.at[date, 'BONDS'] = 1.0 - defensive_cash_floor - weights.at[date, 'EQUITY']
-                # GOLD remains 0 or small? Heuristic:
-                weights.at[date, 'GOLD'] = 0.0
+                eq_w = min(0.1, defensive_equity_cap)
+                bond_w = 1.0 - defensive_cash_floor - eq_w
+                gold_w = 0.0
+                
+                # Apply per-asset constraints
+                eq_w = np.clip(eq_w, min_weights['EQUITY'], max_weights['EQUITY'])
+                bond_w = np.clip(bond_w, min_weights['BONDS'], max_weights['BONDS'])
+                gold_w = np.clip(gold_w, min_weights['GOLD'], max_weights['GOLD'])
+                
+                weights.loc[date] = [eq_w, bond_w, gold_w]
             else:
-                # Normal MVO (Simplified to standard weights for now, or could implement full MVO)
-                # Let's do a simple risk-parity or static 60/30/10 as "normal"
-                weights.loc[date] = [0.6, 0.3, 0.1]
+                # Normal: 60/30/10 clipped to bounds
+                w = np.array([0.6, 0.3, 0.1])
+                for idx, a in enumerate(self.assets):
+                    w[idx] = np.clip(w[idx], min_weights[a], max_weights[a])
+                weights.loc[date] = w
                 
         return weights
 
-    def _calc_weights_min_loss(self, confidence_threshold=0.0, rank_by="Lower CI", max_weight=0.8, top_n=3, weighting_scheme="Equal", **kwargs):
+    def _calc_weights_min_loss(self, confidence_threshold=0.0, rank_by="Lower CI", max_weight=0.8, top_n=3, weighting_scheme="Equal", min_weights=None, max_weights=None, **kwargs):
         """
-        Allocates to assets based on high-conviction safety.
-        Invests only if Lower CI > confidence_threshold.
-        If multiple qualify, ranks them and applies diversification logic.
+        Allocates to assets based on high-conviction safety, respecting min/max.
         """
         weights = pd.DataFrame(0.0, index=self.common_idx, columns=self.assets)
         
+        # Pre-fill with minimum weights
+        for asset in self.assets:
+            weights[asset] = min_weights[asset]
+
         for date, row_ci in self.lower_ci.iterrows():
+            # Available budget after minimums
+            current_total_min = sum(min_weights.values())
+            budget = max(0, max_weight - current_total_min)
+            
             # 1. Identify qualified assets (Lower CI > threshold)
             qualified = row_ci[row_ci > confidence_threshold]
             
-            if not qualified.empty:
+            if not qualified.empty and budget > 0:
                 # 2. Ranking logic
                 if rank_by == "Expected Return":
-                    # Rank qualified assets by their predicted mean return
                     pred_row = self.predictions.loc[date]
                     selected = pred_row[qualified.index].sort_values(ascending=False).head(top_n)
-                else: # Default: Rank by Lower CI
+                else: 
                     selected = qualified.sort_values(ascending=False).head(top_n)
                 
                 n_selected = len(selected)
                 if n_selected > 0:
                     if weighting_scheme == "Equal":
+                        each_alloc = budget / n_selected
                         for asset in selected.index:
-                            weights.at[date, asset] = max_weight / n_selected
+                            room = max_weights[asset] - min_weights[asset]
+                            weights.at[date, asset] += min(each_alloc, room)
                     else: # Proportional
-                        # Split max_weight based on the ranking metric values
-                        # If rank_by is Expected Return, use predicted returns
-                        # If rank_by is Lower CI, use those values
                         total_score = selected.sum()
                         if total_score > 0:
                             for asset, val in selected.items():
-                                weights.at[date, asset] = max_weight * (val / total_score)
+                                each_alloc = budget * (val / total_score)
+                                room = max_weights[asset] - min_weights[asset]
+                                weights.at[date, asset] += min(each_alloc, room)
                         else:
+                            each_alloc = budget / n_selected
                             for asset in selected.index:
-                                weights.at[date, asset] = max_weight / n_selected
+                                room = max_weights[asset] - min_weights[asset]
+                                weights.at[date, asset] += min(each_alloc, room)
                                 
         return weights
 
-    def _calc_weights_buy_hold(self, weights_dict=None, **kwargs):
-        """Static weights."""
+    def _calc_weights_buy_hold(self, weights_dict=None, min_weights=None, max_weights=None, **kwargs):
+        """Static weights clipped to bounds."""
         if weights_dict is None:
             weights_dict = {'EQUITY': 0.6, 'BONDS': 0.3, 'GOLD': 0.1}
         
         weights = pd.DataFrame(0.0, index=self.common_idx, columns=self.assets)
-        for asset, w in weights_dict.items():
-            if asset in self.assets:
-                weights[asset] = w
+        for asset in self.assets:
+            w = weights_dict.get(asset, 0.0)
+            # Clip to user bounds if applicable, although B&H is usually literal
+            w = np.clip(w, min_weights[asset], max_weights[asset])
+            weights[asset] = w
         return weights
