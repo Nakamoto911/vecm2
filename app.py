@@ -2691,117 +2691,408 @@ def main():
             lab_results = st.session_state.lab_results
             benchmark_results = st.session_state.benchmark_results
             hist_stress = st.session_state.lab_stress
+            lab_freq = st.session_state.get('lab_freq', 1)
 
-            # Zone B: Visualization (Unified Stacked Chart)
-            
-            fig_lab = make_subplots(
-                rows=3, cols=1, 
-                shared_xaxes=True, 
-                vertical_spacing=0.02,
-                row_heights=[0.35, 0.45, 0.2],
-                specs=[[{"secondary_y": True}], [{}], [{}]]
-            )
+            # --- TABS FOR RESULTS ---
+            res_tab1, res_tab2 = st.tabs(["📈 HISTORICAL PERFORMANCE", "🔄 ROLLING ANALYSIS"])
 
-            # 1. Asset Allocation (Row 1)
-            weights_df = lab_results['weights']
-            colors_map = {'EQUITY': '#ff6b35', 'BONDS': '#4da6ff', 'GOLD': '#ffd700', 'CASH': '#444'}
-            for asset in ['EQUITY', 'BONDS', 'GOLD', 'CASH']:
+            with res_tab1:
+                # Zone B: Visualization (Unified Stacked Chart)
+                
+                fig_lab = make_subplots(
+                    rows=3, cols=1, 
+                    shared_xaxes=True, 
+                    vertical_spacing=0.02,
+                    row_heights=[0.35, 0.45, 0.2],
+                    specs=[[{"secondary_y": True}], [{}], [{}]]
+                )
+
+                # 1. Asset Allocation (Row 1)
+                weights_df = lab_results['weights']
+                colors_map = {'EQUITY': '#ff6b35', 'BONDS': '#4da6ff', 'GOLD': '#ffd700', 'CASH': '#444'}
+                for asset in ['EQUITY', 'BONDS', 'GOLD', 'CASH']:
+                    fig_lab.add_trace(go.Scatter(
+                        x=weights_df.index, y=weights_df[asset],
+                        name=asset, stackgroup='one',
+                        line=dict(color=colors_map[asset], width=0.5),
+                        fillcolor=colors_map[asset].replace('0.5', '0.3'),
+                        legendgroup='assets'
+                    ), row=1, col=1)
+                
+                # Overlay Stress Score (Secondary Y in Row 1)
                 fig_lab.add_trace(go.Scatter(
-                    x=weights_df.index, y=weights_df[asset],
-                    name=asset, stackgroup='one',
-                    line=dict(color=colors_map[asset], width=0.5),
-                    fillcolor=colors_map[asset].replace('0.5', '0.3'),
-                    legendgroup='assets'
-                ), row=1, col=1)
-            
-            # Overlay Stress Score (Secondary Y in Row 1)
-            fig_lab.add_trace(go.Scatter(
-                x=hist_stress.index, y=hist_stress.values / hist_stress.max() if hist_stress.max() > 0 else hist_stress,
-                name='Stress Score (Norm)', line=dict(color='rgba(255,255,255,0.2)', dash='dot'),
-                legendgroup='regime'
-            ), row=1, col=1, secondary_y=True)
+                    x=hist_stress.index, y=hist_stress.values / hist_stress.max() if hist_stress.max() > 0 else hist_stress,
+                    name='Stress Score (Norm)', line=dict(color='rgba(255,255,255,0.2)', dash='dot'),
+                    legendgroup='regime'
+                ), row=1, col=1, secondary_y=True)
 
-            # 2. Cumulative Returns (Row 2)
-            fig_lab.add_trace(go.Scatter(
-                x=lab_results['equity_curve'].index, y=lab_results['equity_curve'].values, 
-                name='Strategy NAV', line=dict(color='#ff6b35', width=2),
-                legendgroup='nav'
-            ), row=2, col=1)
-            fig_lab.add_trace(go.Scatter(
-                x=benchmark_results['equity_curve'].index, y=benchmark_results['equity_curve'].values, 
-                name='Benchmark NAV', line=dict(color='#888', dash='dash'),
-                legendgroup='nav'
-            ), row=2, col=1)
+                # 2. Cumulative Returns (Row 2)
+                fig_lab.add_trace(go.Scatter(
+                    x=lab_results['equity_curve'].index, y=lab_results['equity_curve'].values, 
+                    name='Strategy NAV', line=dict(color='#ff6b35', width=2),
+                    legendgroup='nav'
+                ), row=2, col=1)
+                fig_lab.add_trace(go.Scatter(
+                    x=benchmark_results['equity_curve'].index, y=benchmark_results['equity_curve'].values, 
+                    name='Benchmark NAV', line=dict(color='#888', dash='dash'),
+                    legendgroup='nav'
+                ), row=2, col=1)
 
-            # 3. Drawdown Profile (Row 3)
-            def get_drawdown(curve):
-                return (curve / curve.expanding().max()) - 1
-            
-            fig_lab.add_trace(go.Scatter(
-                x=lab_results['equity_curve'].index, y=get_drawdown(lab_results['equity_curve']), 
-                name='Strategy DD', fill='tozeroy', line=dict(color='#ff4757'),
-                legendgroup='dd'
-            ), row=3, col=1)
-            fig_lab.add_trace(go.Scatter(
-                x=benchmark_results['equity_curve'].index, y=get_drawdown(benchmark_results['equity_curve']), 
-                name='Benchmark DD', line=dict(color='#888'),
-                legendgroup='dd'
-            ), row=3, col=1)
+                # 3. Drawdown Profile (Row 3)
+                def get_drawdown(curve):
+                    return (curve / curve.expanding().max()) - 1
+                
+                fig_lab.add_trace(go.Scatter(
+                    x=lab_results['equity_curve'].index, y=get_drawdown(lab_results['equity_curve']), 
+                    name='Strategy DD', fill='tozeroy', line=dict(color='#ff4757'),
+                    legendgroup='dd'
+                ), row=3, col=1)
+                fig_lab.add_trace(go.Scatter(
+                    x=benchmark_results['equity_curve'].index, y=get_drawdown(benchmark_results['equity_curve']), 
+                    name='Benchmark DD', line=dict(color='#888'),
+                    legendgroup='dd'
+                ), row=3, col=1)
 
-            # Layout Updates
-            use_log = st.checkbox("Log Scale (NAV Chart)", key="lab_log_scale")
-            theme = create_theme()
-            
-            layout_args = {
-                'height': 800,
-                'showlegend': True,
-                'legend': dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
-                'margin': dict(l=50, r=50, t=60, b=50),
-                'hovermode': 'x unified',
-                'paper_bgcolor': theme['paper_bgcolor'],
-                'plot_bgcolor': theme['plot_bgcolor']
-            }
-            fig_lab.update_layout(**layout_args)
-            
-            # Row 1 Styling (Allocation)
-            fig_lab.update_yaxes(title_text="Allocation", range=[0, 1], tickformat='.0%', row=1, col=1, gridcolor='#1a1a1a')
-            fig_lab.update_yaxes(range=[0, 1.2], showgrid=False, showticklabels=False, row=1, col=1, secondary_y=True)
-            
-            # Row 2 Styling (Performance)
-            fig_lab.update_yaxes(title_text="NAV ($)", type="log" if use_log else "linear", row=2, col=1, gridcolor='#1a1a1a')
-            
-            # Row 3 Styling (Drawdown)
-            fig_lab.update_yaxes(title_text="Drawdown", tickformat='.0%', row=3, col=1, gridcolor='#1a1a1a')
-            
-            # Global X-Axis Styling
-            fig_lab.update_xaxes(**theme['xaxis'], row=1, col=1)
-            fig_lab.update_xaxes(**theme['xaxis'], row=2, col=1)
-            fig_lab.update_xaxes(**theme['xaxis'], row=3, col=1)
+                # Layout Updates
+                use_log = st.checkbox("Log Scale (NAV Chart)", key="lab_log_scale")
+                theme = create_theme()
+                
+                layout_args = {
+                    'height': 800,
+                    'showlegend': True,
+                    'legend': dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
+                    'margin': dict(l=50, r=50, t=60, b=50),
+                    'hovermode': 'x unified',
+                    'paper_bgcolor': theme['paper_bgcolor'],
+                    'plot_bgcolor': theme['plot_bgcolor']
+                }
+                fig_lab.update_layout(**layout_args)
+                
+                # Row 1 Styling (Allocation)
+                fig_lab.update_yaxes(title_text="Allocation", range=[0, 1], tickformat='.0%', row=1, col=1, gridcolor='#1a1a1a')
+                fig_lab.update_yaxes(range=[0, 1.2], showgrid=False, showticklabels=False, row=1, col=1, secondary_y=True)
+                
+                # Row 2 Styling (Performance)
+                fig_lab.update_yaxes(title_text="NAV ($)", type="log" if use_log else "linear", row=2, col=1, gridcolor='#1a1a1a')
+                
+                # Row 3 Styling (Drawdown)
+                fig_lab.update_yaxes(title_text="Drawdown", tickformat='.0%', row=3, col=1, gridcolor='#1a1a1a')
+                
+                # Global X-Axis Styling
+                fig_lab.update_xaxes(**theme['xaxis'], row=1, col=1)
+                fig_lab.update_xaxes(**theme['xaxis'], row=2, col=1)
+                fig_lab.update_xaxes(**theme['xaxis'], row=3, col=1)
 
-            st.plotly_chart(fig_lab, width='stretch')
+                st.plotly_chart(fig_lab, width='stretch')
 
-            # Zone C: Metrics Table
-            st.divider()
-            st.markdown("**Performance Metrics Summary**")
-            
-            # Extract common metrics
-            metrics_comp = pd.DataFrame({
-                'Strategy': lab_results['metrics'],
-                'Benchmark': benchmark_results['metrics']
-            }).T
-            
-            # Formatting
-            metrics_comp['CAGR'] = metrics_comp['CAGR'].apply(lambda x: f"{x:.2%}")
-            metrics_comp['Volatility'] = metrics_comp['Volatility'].apply(lambda x: f"{x:.2%}")
-            metrics_comp['Sharpe'] = metrics_comp['Sharpe'].apply(lambda x: f"{x:.2f}")
-            metrics_comp['Sortino'] = metrics_comp['Sortino'].apply(lambda x: f"{x:.2f}")
-            metrics_comp['Max Drawdown'] = metrics_comp['Max Drawdown'].apply(lambda x: f"{x:.2%}")
-            metrics_comp['Calmar'] = metrics_comp['Calmar'].apply(lambda x: f"{x:.2f}")
-            metrics_comp['Turnover'] = metrics_comp['Turnover'].apply(lambda x: f"{x:.2f}x")
-            
-            metrics_comp['Rebalancing Cost'] = metrics_comp['Rebalancing Cost'].apply(lambda x: f"${x:,.0f}")
-            
-            st.table(metrics_comp)
+                # Zone C: Metrics Table
+                st.divider()
+                st.markdown("**Performance Metrics Summary**")
+                
+                # Extract common metrics
+                metrics_comp = pd.DataFrame({
+                    'Strategy': lab_results['metrics'],
+                    'Benchmark': benchmark_results['metrics']
+                }).T
+                
+                # Formatting
+                metrics_comp['CAGR'] = metrics_comp['CAGR'].apply(lambda x: f"{x:.2%}")
+                metrics_comp['Volatility'] = metrics_comp['Volatility'].apply(lambda x: f"{x:.2%}")
+                metrics_comp['Sharpe'] = metrics_comp['Sharpe'].apply(lambda x: f"{x:.2f}")
+                metrics_comp['Sortino'] = metrics_comp['Sortino'].apply(lambda x: f"{x:.2f}")
+                metrics_comp['Max Drawdown'] = metrics_comp['Max Drawdown'].apply(lambda x: f"{x:.2%}")
+                metrics_comp['Calmar'] = metrics_comp['Calmar'].apply(lambda x: f"{x:.2f}")
+                metrics_comp['Turnover'] = metrics_comp['Turnover'].apply(lambda x: f"{x:.2f}x")
+                metrics_comp['Rebalancing Cost'] = metrics_comp['Rebalancing Cost'].apply(lambda x: f"${x:,.0f}")
+                
+                st.table(metrics_comp)
+
+            with res_tab2:
+                # Rolling Analysis configuration
+                col_roll1, col_roll2 = st.columns([1, 2])
+                with col_roll1:
+                    holding_duration = st.selectbox(
+                        "Holding Duration", 
+                        options=[1, 2, 3, 5, 10], 
+                        index=3, 
+                        format_func=lambda x: f"{x} Year{'s' if x > 1 else ''}",
+                        key="roll_duration"
+                    )
+                
+                # Calculations
+                window = holding_duration * 12
+                
+                def get_rolling_metrics(equity_curve, window_size, risk_free_rate=0.04):
+                    # Returns
+                    returns = equity_curve.pct_change().dropna()
+                    
+                    # Rolling CAGR
+                    # (End / Start) ^ (1/Years) - 1
+                    # We look forward: if I buy at T, what is my return at T+window?
+                    rolling_cagr = (equity_curve.shift(-window_size) / equity_curve) ** (12 / window_size) - 1
+                    rolling_cagr = rolling_cagr.dropna()
+                    
+                    # Rolling Volatility (using periodic returns within the window)
+                    def calc_vol(x):
+                        rets = x.pct_change().dropna()
+                        return rets.std() * np.sqrt(12)
+                    
+                    # This is slow for large datasets, but usually okay for monthly backtests
+                    rolling_vol = equity_curve.rolling(window=window_size+1).apply(calc_vol).shift(-window_size).dropna()
+                    
+                    # Rolling Sharpe
+                    rolling_sharpe = (rolling_cagr - risk_free_rate) / rolling_vol
+                    
+                    # Rolling Sortino
+                    def calc_sortino(x):
+                        rets = x.pct_change().dropna()
+                        downside_rets = np.minimum(0, rets)
+                        downside_std = np.sqrt(np.mean(downside_rets**2)) * np.sqrt(12)
+                        cagr = (x.iloc[-1] / x.iloc[0]) ** (12 / (len(x)-1)) - 1
+                        return (cagr - risk_free_rate) / downside_std if downside_std > 0 else 0
+
+                    rolling_sortino = equity_curve.rolling(window=window_size+1).apply(calc_sortino).shift(-window_size).dropna()
+                    
+                    # Rolling Max Drawdown
+                    def calc_mdd(x):
+                        dd = (x / x.cummax()) - 1
+                        return dd.min()
+                    
+                    rolling_mdd = equity_curve.rolling(window=window_size+1).apply(calc_mdd).shift(-window_size).dropna()
+
+                    return {
+                        'cagr': rolling_cagr,
+                        'vol': rolling_vol,
+                        'sharpe': rolling_sharpe,
+                        'sortino': rolling_sortino,
+                        'mdd': rolling_mdd
+                    }
+
+                with st.spinner(f"Calculating rolling metrics for {holding_duration}Y window..."):
+                    strat_roll = get_rolling_metrics(lab_results['equity_curve'], window)
+                    bench_roll = get_rolling_metrics(benchmark_results['equity_curve'], window)
+                    
+                    # Intersect dates to ensure alignment
+                    common_roll_idx = strat_roll['cagr'].index.intersection(bench_roll['cagr'].index)
+                    if common_roll_idx.empty:
+                        st.warning("Insufficient data for the selected holding duration.")
+                    else:
+                        for k in strat_roll: strat_roll[k] = strat_roll[k].loc[common_roll_idx]
+                        for k in bench_roll: bench_roll[k] = bench_roll[k].loc[common_roll_idx]
+                        
+                        # Layout: Charts on left, Table on right
+                        col_charts, col_table = st.columns([2, 1])
+                        
+                        theme = create_theme()
+                        
+                        with col_charts:
+                            # 1. Rolling Return Chart
+                            fig_roll_ret = go.Figure()
+                            fig_roll_ret.add_trace(go.Scatter(
+                                x=strat_roll['cagr'].index, y=strat_roll['cagr'],
+                                name='Strategy', line=dict(color='#ff6b35', width=2)
+                            ))
+                            fig_roll_ret.add_trace(go.Scatter(
+                                x=bench_roll['cagr'].index, y=bench_roll['cagr'],
+                                name='Benchmark', line=dict(color='#888', dash='dash')
+                            ))
+                            fig_roll_ret.update_layout(
+                                title=f"Rolling {holding_duration}Y Return (CAGR)",
+                                **{k:v for k,v in layout_args.items() if k not in ['height', 'margin']},
+                                height=400,
+                                margin=dict(l=50, r=20, t=50, b=20)
+                            )
+                            fig_roll_ret.update_yaxes(tickformat='.1%', gridcolor='#1a1a1a')
+                            fig_roll_ret.update_xaxes(**theme['xaxis'])
+                            st.plotly_chart(fig_roll_ret, width='stretch')
+                            
+                            # 2. Rolling Volatility Chart
+                            fig_roll_vol = go.Figure()
+                            fig_roll_vol.add_trace(go.Scatter(
+                                x=strat_roll['vol'].index, y=strat_roll['vol'],
+                                name='Strategy', line=dict(color='#ff6b35', width=2)
+                            ))
+                            fig_roll_vol.add_trace(go.Scatter(
+                                x=bench_roll['vol'].index, y=bench_roll['vol'],
+                                name='Benchmark', line=dict(color='#888', dash='dash')
+                            ))
+                            fig_roll_vol.update_layout(
+                                title=f"Rolling {holding_duration}Y Volatility",
+                                **{k:v for k,v in layout_args.items() if k not in ['height', 'margin']},
+                                height=350,
+                                margin=dict(l=50, r=20, t=50, b=20)
+                            )
+                            fig_roll_vol.update_yaxes(tickformat='.1%', gridcolor='#1a1a1a')
+                            fig_roll_vol.update_xaxes(**theme['xaxis'])
+                            st.plotly_chart(fig_roll_vol, width='stretch')
+
+                        with col_table:
+                            st.markdown(f"**Key Metrics ({holding_duration}Y Rolling)**")
+                            
+                            def summarize_roll(roll_data):
+                                cagr = roll_data['cagr']
+                                avg_cagr = cagr.mean()
+                                return pd.Series({
+                                    'Average Return': f"{avg_cagr:.2%}",
+                                    '$10,000 Becomes': f"${10000 * (1 + avg_cagr)**holding_duration:,.0f}",
+                                    'Min Return': f"{cagr.min():.2%}",
+                                    '25th Percentile': f"{cagr.quantile(0.25):.2%}",
+                                    'Median Return': f"{cagr.median():.2%}",
+                                    '75th Percentile': f"{cagr.quantile(0.75):.2%}",
+                                    'Max Return': f"{cagr.max():.2%}",
+                                    'Volatility': f"{roll_data['vol'].mean():.2%}",
+                                    'Sharpe Ratio': f"{roll_data['sharpe'].mean():.2f}",
+                                    'Sortino Ratio': f"{roll_data['sortino'].mean():.2f}",
+                                    'Positive Periods': f"{(cagr > 0).mean():.1%}",
+                                    'Max Drawdown': f"{roll_data['mdd'].min():.2%}"
+                                })
+
+                            m_strat = summarize_roll(strat_roll)
+                            m_bench = summarize_roll(bench_roll)
+                            
+                            # Add Avg Rebalancing Cost
+                            # The full backtest cost is known. For rolling windows, we approximate or use the average rebalance cost per step.
+                            # The user asked for "rebalancing cost (Avg)".
+                            total_rebal_cost = lab_results['metrics'].get('Rebalancing Cost', 0)
+                            n_months = len(lab_results['equity_curve']) - 1
+                            avg_monthly_rebal = total_rebal_cost / n_months if n_months > 0 else 0
+                            avg_rebal_window = avg_monthly_rebal * window
+                            
+                            m_strat['Rebalancing Cost (Avg)'] = f"${avg_rebal_window:,.0f}"
+                            m_bench['Rebalancing Cost (Avg)'] = "$0" # Benchmark is buy & hold 
+                            
+                            metrics_df = pd.DataFrame({
+                                'Metric': m_strat.index,
+                                'Strategy': m_strat.values,
+                                'Benchmark': m_bench.values
+                            })
+                            
+                            # Custom HTML Table with Row-Level Tooltips
+                            tooltips = {
+                                'Average Return': 'Geometric average (CAGR) of all rolling periods.',
+                                '$10,000 Becomes': 'Projected value of $10,000 after one holding period based on Avg CAGR.',
+                                'Min Return': 'The lowest CAGR observed across all rolling windows.',
+                                '25th Percentile': '25% of the rolling periods had a return lower than this value.',
+                                'Median Return': 'The middle value of all returns; 50% were higher and 50% were lower.',
+                                '75th Percentile': '75% of the rolling periods had a return lower than this value.',
+                                'Max Return': 'The highest CAGR observed across all rolling windows.',
+                                'Volatility': 'Average annualized standard deviation of returns during the periods.',
+                                'Sharpe Ratio': 'Average risk-adjusted return (Excess Return / Volatility).',
+                                'Sortino Ratio': 'Average downside-risk-adjusted return (Excess Return / Downside Deviation).',
+                                'Positive Periods': 'The percentage of rolling windows that ended with a positive return.',
+                                'Max Drawdown': 'The maximum peak-to-trough decline observed across all rolling windows.',
+                                'Rebalancing Cost (Avg)': 'The average estimated cost of trading during the rolling period.'
+                            }
+
+                            # Style block
+                            style_html = """
+<style>
+.metrics-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: inherit;
+    background: #0e1117;
+    border-radius: 8px;
+    overflow: visible;
+    color: #fafafa;
+    margin-top: 10px;
+}
+.metrics-table th {
+    text-align: left;
+    padding: 12px 15px;
+    background: #1f2937;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: #94a3b8;
+    border-bottom: 2px solid #374151;
+}
+.metrics-table td {
+    padding: 10px 15px;
+    border-bottom: 1px solid #1f2937;
+    font-size: 0.85rem;
+}
+.metrics-table tr:hover td {
+    background: #1e293b;
+}
+.tooltip-container {
+    position: relative;
+    cursor: help;
+    border-bottom: 1px dotted #4da6ff;
+    color: #4da6ff;
+}
+.tooltip-container .tooltip-text {
+    visibility: hidden;
+    width: 200px;
+    background-color: #334155;
+    color: #fff;
+    text-align: left;
+    border-radius: 6px;
+    padding: 8px 12px;
+    position: absolute;
+    z-index: 999;
+    bottom: 125%;
+    left: 0;
+    opacity: 0;
+    transition: opacity 0.3s;
+    font-size: 0.75rem;
+    font-weight: normal;
+    line-height: 1.4;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+    pointer-events: none;
+}
+.tooltip-container:hover .tooltip-text {
+    visibility: visible;
+    opacity: 1;
+}
+.val-strat { color: #ff6b35; font-weight: 600; }
+.val-bench { color: #94a3b8; }
+</style>
+"""
+                            
+                            rows_html = ""
+                            for _, m_row in metrics_df.iterrows():
+                                m_name = m_row['Metric']
+                                tip = tooltips.get(m_name, "")
+                                rows_html += f'<tr><td><span class="tooltip-container">{m_name}<span class="tooltip-text">{tip}</span></span></td><td class="val-strat">{m_row["Strategy"]}</td><td class="val-bench">{m_row["Benchmark"]}</td></tr>'
+                            
+                            table_html = f"""
+<table class="metrics-table">
+    <thead>
+        <tr>
+            <th>Metric</th>
+            <th>Strategy</th>
+            <th>Benchmark</th>
+        </tr>
+    </thead>
+    <tbody>
+        {rows_html}
+    </tbody>
+</table>
+"""
+                            st.markdown(style_html + table_html, unsafe_allow_html=True)
+                            
+                            # Period summary info
+                            if not common_roll_idx.empty:
+                                start_dt = common_roll_idx[0].strftime('%b %Y')
+                                last_start_dt = common_roll_idx[-1]
+                                end_dt = last_start_dt.strftime('%b %Y')
+                                
+                                # The true analysis end date is the end of the last window
+                                analysis_end_dt = (last_start_dt + pd.DateOffset(months=window)).strftime('%b %Y')
+                                
+                                n_per = len(common_roll_idx)
+                                st.markdown(f"""
+                                <div style="margin-top: 15px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); font-size: 0.85rem; color: #94a3b8;">
+                                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 8px;">
+                                        <span>📅 <b>Start Dates:</b> {start_dt} — {end_dt}</span>
+                                        <span>🏁 <b>Analysis End:</b> {analysis_end_dt}</span>
+                                    </div>
+                                    <div style="text-align: center; color: #4da6ff; font-weight: 600;">
+                                        📊 Rolling Periods: {n_per}
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
         else:
             st.info("💡 Select a strategy and click the button above to start the out-of-sample simulation. The process may take up to 60 seconds on the first run.")
 
