@@ -53,7 +53,7 @@ class StrategyBacktester:
         self.lower_ci = self.lower_ci.loc[self.common_idx]
         self.regime = self.regime.loc[self.common_idx]
 
-    def _simulate_engine(self, target_weights, trading_cost_bps=10, initial_capital=10000, rebalance_freq=1):
+    def _simulate_engine(self, target_weights, trading_cost_bps=10, initial_capital=10000, rebalance_freq=1, risk_free_rate=0.04):
         """
         Vectorized simulation engine.
         target_weights: DataFrame of periodic target weights.
@@ -118,7 +118,7 @@ class StrategyBacktester:
         years = len(self.common_idx) / 12.0
         annualized_turnover = (total_turnover / years) if years > 0 else 0
         
-        metrics = self._calculate_metrics(equity_series, weights_df, annualized_turnover)
+        metrics = self._calculate_metrics(equity_series, weights_df, annualized_turnover, risk_free_rate=risk_free_rate)
         metrics['Rebalancing Cost'] = total_costs_paid
         
         return {
@@ -127,7 +127,7 @@ class StrategyBacktester:
             'metrics': metrics
         }
 
-    def _calculate_metrics(self, equity_curve, weights_df, turnover=0):
+    def _calculate_metrics(self, equity_curve, weights_df, turnover=0, risk_free_rate=0.04):
         returns = equity_curve.pct_change().dropna()
         if returns.empty:
             return {}
@@ -136,12 +136,17 @@ class StrategyBacktester:
         years = len(returns) / 12.0
         cagr = (1 + total_return) ** (1/years) - 1 if years > 0 else 0
         vol = returns.std() * np.sqrt(12)
-        sharpe = (cagr - 0.04) / vol if vol > 0 else 0
+        sharpe = (cagr - risk_free_rate) / vol if vol > 0 else 0
         
-        # Sortino Ratio
-        downside_returns = returns[returns < 0]
-        downside_std = downside_returns.std() * np.sqrt(12) if not downside_returns.empty else 0
-        sortino = (cagr - 0.04) / downside_std if downside_std > 0 else 0
+        # Sortino Ratio (Standard MAR = risk_free_rate)
+        # We calculate excess returns relative to MAR (usually risk free rate or 0)
+        # Here we use standard industry practice: (CAGR - RF) / Downside Deviation
+        downside_returns = returns.copy()
+        # Downside is only when return < 0 (or < MAR, but 0 is standard for denominator)
+        downside_returns = np.minimum(0, returns)
+        downside_std = np.sqrt(np.mean(downside_returns**2)) * np.sqrt(12)
+        
+        sortino = (cagr - risk_free_rate) / downside_std if downside_std > 0 else 0
         
         # Max Drawdown
         rolling_max = equity_curve.expanding().max()
@@ -184,8 +189,9 @@ class StrategyBacktester:
         rebalance_freq = kwargs.get('rebalance_freq', 1)
         trading_cost_bps = kwargs.get('trading_cost_bps', 10)
         initial_capital = kwargs.get('initial_capital', 10000)
+        risk_free_rate = kwargs.get('risk_free_rate', 0.04)
         
-        return self._simulate_engine(weights, trading_cost_bps, initial_capital, rebalance_freq)
+        return self._simulate_engine(weights, trading_cost_bps, initial_capital, rebalance_freq, risk_free_rate=risk_free_rate)
 
     def _apply_constraints(self, weights_df, min_weights, max_weights):
         """
