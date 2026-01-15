@@ -2562,7 +2562,7 @@ def main():
                 
                 # Fallback to requested defaults if available in options
                 default_start = "2000-01" if "2000-01" in [d.strftime('%Y-%m') for d in all_dates[min_train:]] else start_str
-                default_end = "2010-10" if "2010-10" in [d.strftime('%Y-%m') for d in all_dates[min_train:]] else end_str
+                default_end = end_str # Use latest available date by default
 
                 selected_range = st.select_slider(
                     "Select Simulation Period",
@@ -2686,128 +2686,180 @@ def main():
                 st.session_state.benchmark_results = benchmark_results
                 st.session_state.lab_stress = hist_stress
                 st.session_state.lab_freq = rebalance_freq
+                st.session_state.lab_initial_capital = initial_capital
+                # Initialize reset count if not present
+                if 'lab_reset_count' not in st.session_state:
+                    st.session_state.lab_reset_count = 0
 
         if "lab_results" in st.session_state:
             lab_results = st.session_state.lab_results
             benchmark_results = st.session_state.benchmark_results
             hist_stress = st.session_state.lab_stress
             lab_freq = st.session_state.get('lab_freq', 1)
+            initial_capital = st.session_state.lab_initial_capital # Retrieve initial capital
+
+            # --- SHARED UI THEME & LAYOUT ---
+            theme = create_theme()
+            layout_args = {
+                'height': 800,
+                'showlegend': True,
+                'legend': dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
+                'margin': dict(l=50, r=50, t=60, b=50),
+                'hovermode': 'x unified',
+                'paper_bgcolor': theme['paper_bgcolor'],
+                'plot_bgcolor': theme['plot_bgcolor']
+            }
+
 
             # --- TABS FOR RESULTS ---
-            res_tab1, res_tab2 = st.tabs(["📈 HISTORICAL PERFORMANCE", "🔄 ROLLING ANALYSIS"])
+            # 1. Selection detection is now handled directly in the chart render block for immediacy.
+            # (We removed the hoisted loop to avoid confusing states).
+            
 
-            with res_tab1:
-                # Zone B: Visualization (Unified Stacked Chart)
-                
-                fig_lab = make_subplots(
-                    rows=3, cols=1, 
-                    shared_xaxes=True, 
-                    vertical_spacing=0.02,
-                    row_heights=[0.35, 0.45, 0.2],
-                    specs=[[{"secondary_y": True}], [{}], [{}]]
-                )
+            # Logic: We use a fixed number of tabs to avoid UI glitches with dynamic counts.
+            # But we respect the "priority" by naming and contents.
+            # If drilldown is NOT active, we show only one tab as requested: "remove the historical performance tab".
+            # Actually, to make it work reliably with the "click" trigger, dynamic tabs should work.
+            # Let's try one more robust way: use st.tabs conditionally but with a fixed length if possible? No.
+            
+            drilldown_active = st.session_state.get('lab_drilldown_active', False)
+            
+            # Use appropriate labels: Rolling always first, Drill-Down second if active
+            if drilldown_active:
+                tab_labels = ["🔄 ROLLING ANALYSIS", "📈 HISTORICAL PERFORMANCE (DRILL-DOWN)"]
+            else:
+                tab_labels = ["🔄 ROLLING ANALYSIS"]
+            
+            results_tabs = st.tabs(tab_labels)
+            
+            # Assignment based on order
+            res_tab_roll = results_tabs[0]
+            res_tab_hist = results_tabs[1] if drilldown_active else None
 
-                # 1. Asset Allocation (Row 1)
-                weights_df = lab_results['weights']
-                colors_map = {'EQUITY': '#ff6b35', 'BONDS': '#4da6ff', 'GOLD': '#ffd700', 'CASH': '#444'}
-                for asset in ['EQUITY', 'BONDS', 'GOLD', 'CASH']:
+            if res_tab_hist:
+                with res_tab_hist:
+                    # Filter results for the drill-down window
+                    d_start = st.session_state.lab_drilldown_start
+                    d_end = d_start + pd.DateOffset(months=st.session_state.lab_drilldown_duration * 12)
+                    
+                    # Create filtered copies for plotting
+                    lab_results_disp = {
+                        'equity_curve': lab_results['equity_curve'].loc[d_start:d_end],
+                        'weights': lab_results['weights'].loc[d_start:d_end],
+                        'metrics': lab_results['metrics'] # We'll re-calculate below
+                    }
+                    bench_results_disp = {
+                        'equity_curve': benchmark_results['equity_curve'].loc[d_start:d_end],
+                        'metrics': benchmark_results['metrics']
+                    }
+                    hist_stress_disp = hist_stress.loc[d_start:d_end]
+                    
+                    # Re-base equity curves to initial_capital for the drill-down window
+                    if not lab_results_disp['equity_curve'].empty:
+                        base_val = lab_results_disp['equity_curve'].iloc[0]
+                        lab_results_disp['equity_curve'] = (lab_results_disp['equity_curve'] / base_val) * initial_capital
+                    if not bench_results_disp['equity_curve'].empty:
+                        base_val = bench_results_disp['equity_curve'].iloc[0]
+                        bench_results_disp['equity_curve'] = (bench_results_disp['equity_curve'] / base_val) * initial_capital
+
+                    # Re-calculate metrics for this specific window
+                    tmp_bt = StrategyBacktester(asset_prices, pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+                    lab_results_disp['metrics'] = tmp_bt._calculate_metrics(lab_results_disp['equity_curve'], lab_results_disp['weights'])
+                    bench_results_disp['metrics'] = tmp_bt._calculate_metrics(bench_results_disp['equity_curve'], pd.DataFrame())
+
+                    st.caption(f"Showing performance for **{st.session_state.lab_drilldown_duration} Year window** starting **{d_start.strftime('%b %Y')}**")
+                    if st.button("🔄 Reset to Full Analysis", key="reset_drilldown"):
+                        st.session_state.lab_drilldown_active = False
+                        st.session_state.lab_reset_count = st.session_state.get('lab_reset_count', 0) + 1
+                        st.rerun()
+
+                    # Zone B: Visualization (Unified Stacked Chart)
+                    fig_lab = make_subplots(
+                        rows=3, cols=1, 
+                        shared_xaxes=True, 
+                        vertical_spacing=0.02,
+                        row_heights=[0.35, 0.45, 0.2],
+                        specs=[[{"secondary_y": True}], [{}], [{}]]
+                    )
+
+                    # 1. Asset Allocation (Row 1)
+                    weights_df = lab_results_disp['weights']
+                    colors_map = {'EQUITY': '#ff6b35', 'BONDS': '#4da6ff', 'GOLD': '#ffd700', 'CASH': '#444'}
+                    for asset in ['EQUITY', 'BONDS', 'GOLD', 'CASH']:
+                        if asset in weights_df.columns:
+                            fig_lab.add_trace(go.Scatter(
+                                x=weights_df.index, y=weights_df[asset],
+                                name=asset, stackgroup='one',
+                                line=dict(color=colors_map[asset], width=0.5),
+                                fillcolor=colors_map[asset].replace('0.5', '0.3'),
+                                legendgroup='assets'
+                            ), row=1, col=1)
+                    
+                    # Overlay Stress Score
                     fig_lab.add_trace(go.Scatter(
-                        x=weights_df.index, y=weights_df[asset],
-                        name=asset, stackgroup='one',
-                        line=dict(color=colors_map[asset], width=0.5),
-                        fillcolor=colors_map[asset].replace('0.5', '0.3'),
-                        legendgroup='assets'
-                    ), row=1, col=1)
-                
-                # Overlay Stress Score (Secondary Y in Row 1)
-                fig_lab.add_trace(go.Scatter(
-                    x=hist_stress.index, y=hist_stress.values / hist_stress.max() if hist_stress.max() > 0 else hist_stress,
-                    name='Stress Score (Norm)', line=dict(color='rgba(255,255,255,0.2)', dash='dot'),
-                    legendgroup='regime'
-                ), row=1, col=1, secondary_y=True)
+                        x=hist_stress_disp.index, y=hist_stress_disp.values / hist_stress_disp.max() if not hist_stress_disp.empty and hist_stress_disp.max() > 0 else hist_stress_disp,
+                        name='Stress Score (Norm)', line=dict(color='rgba(255,255,255,0.2)', dash='dot'),
+                        legendgroup='regime'
+                    ), row=1, col=1, secondary_y=True)
 
-                # 2. Cumulative Returns (Row 2)
-                fig_lab.add_trace(go.Scatter(
-                    x=lab_results['equity_curve'].index, y=lab_results['equity_curve'].values, 
-                    name='Strategy NAV', line=dict(color='#ff6b35', width=2),
-                    legendgroup='nav'
-                ), row=2, col=1)
-                fig_lab.add_trace(go.Scatter(
-                    x=benchmark_results['equity_curve'].index, y=benchmark_results['equity_curve'].values, 
-                    name='Benchmark NAV', line=dict(color='#888', dash='dash'),
-                    legendgroup='nav'
-                ), row=2, col=1)
+                    # 2. Cumulative Returns (Row 2)
+                    fig_lab.add_trace(go.Scatter(
+                        x=lab_results_disp['equity_curve'].index, y=lab_results_disp['equity_curve'].values, 
+                        name='Strategy NAV', line=dict(color='#ff6b35', width=2),
+                        legendgroup='nav'
+                    ), row=2, col=1)
+                    fig_lab.add_trace(go.Scatter(
+                        x=bench_results_disp['equity_curve'].index, y=bench_results_disp['equity_curve'].values, 
+                        name='Benchmark NAV', line=dict(color='#888', dash='dash'),
+                        legendgroup='nav'
+                    ), row=2, col=1)
 
-                # 3. Drawdown Profile (Row 3)
-                def get_drawdown(curve):
-                    return (curve / curve.expanding().max()) - 1
-                
-                fig_lab.add_trace(go.Scatter(
-                    x=lab_results['equity_curve'].index, y=get_drawdown(lab_results['equity_curve']), 
-                    name='Strategy DD', fill='tozeroy', line=dict(color='#ff4757'),
-                    legendgroup='dd'
-                ), row=3, col=1)
-                fig_lab.add_trace(go.Scatter(
-                    x=benchmark_results['equity_curve'].index, y=get_drawdown(benchmark_results['equity_curve']), 
-                    name='Benchmark DD', line=dict(color='#888'),
-                    legendgroup='dd'
-                ), row=3, col=1)
+                    # 3. Drawdown Profile (Row 3)
+                    def get_drawdown(curve):
+                        return (curve / curve.expanding().max()) - 1
+                    
+                    fig_lab.add_trace(go.Scatter(
+                        x=lab_results_disp['equity_curve'].index, y=get_drawdown(lab_results_disp['equity_curve']), 
+                        name='Strategy DD', fill='tozeroy', line=dict(color='#ff4757'),
+                        legendgroup='dd'
+                    ), row=3, col=1)
+                    fig_lab.add_trace(go.Scatter(
+                        x=bench_results_disp['equity_curve'].index, y=get_drawdown(bench_results_disp['equity_curve']), 
+                        name='Benchmark DD', line=dict(color='#888'),
+                        legendgroup='dd'
+                    ), row=3, col=1)
 
-                # Layout Updates
-                use_log = st.checkbox("Log Scale (NAV Chart)", key="lab_log_scale")
-                theme = create_theme()
-                
-                layout_args = {
-                    'height': 800,
-                    'showlegend': True,
-                    'legend': dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
-                    'margin': dict(l=50, r=50, t=60, b=50),
-                    'hovermode': 'x unified',
-                    'paper_bgcolor': theme['paper_bgcolor'],
-                    'plot_bgcolor': theme['plot_bgcolor']
-                }
-                fig_lab.update_layout(**layout_args)
-                
-                # Row 1 Styling (Allocation)
-                fig_lab.update_yaxes(title_text="Allocation", range=[0, 1], tickformat='.0%', row=1, col=1, gridcolor='#1a1a1a')
-                fig_lab.update_yaxes(range=[0, 1.2], showgrid=False, showticklabels=False, row=1, col=1, secondary_y=True)
-                
-                # Row 2 Styling (Performance)
-                fig_lab.update_yaxes(title_text="NAV ($)", type="log" if use_log else "linear", row=2, col=1, gridcolor='#1a1a1a')
-                
-                # Row 3 Styling (Drawdown)
-                fig_lab.update_yaxes(title_text="Drawdown", tickformat='.0%', row=3, col=1, gridcolor='#1a1a1a')
-                
-                # Global X-Axis Styling
-                fig_lab.update_xaxes(**theme['xaxis'], row=1, col=1)
-                fig_lab.update_xaxes(**theme['xaxis'], row=2, col=1)
-                fig_lab.update_xaxes(**theme['xaxis'], row=3, col=1)
+                    # Layout Updates
+                    use_log = st.checkbox("Log Scale (NAV Chart)", key="lab_log_scale_drill")
+                    fig_lab.update_layout(**layout_args)
+                    fig_lab.update_yaxes(title_text="Allocation", range=[0, 1], tickformat='.0%', row=1, col=1, gridcolor='#1a1a1a')
+                    fig_lab.update_yaxes(range=[0, 1.2], showgrid=False, showticklabels=False, row=1, col=1, secondary_y=True)
+                    fig_lab.update_yaxes(title_text="NAV ($)", type="log" if use_log else "linear", row=2, col=1, gridcolor='#1a1a1a')
+                    fig_lab.update_yaxes(title_text="Drawdown", tickformat='.0%', row=3, col=1, gridcolor='#1a1a1a')
+                    fig_lab.update_xaxes(**theme['xaxis'], row=1, col=1)
+                    fig_lab.update_xaxes(**theme['xaxis'], row=2, col=1)
+                    fig_lab.update_xaxes(**theme['xaxis'], row=3, col=1)
 
-                st.plotly_chart(fig_lab, width='stretch')
+                    st.plotly_chart(fig_lab, width='stretch')
 
-                # Zone C: Metrics Table
-                st.divider()
-                st.markdown("**Performance Metrics Summary**")
-                
-                # Extract common metrics
-                metrics_comp = pd.DataFrame({
-                    'Strategy': lab_results['metrics'],
-                    'Benchmark': benchmark_results['metrics']
-                }).T
-                
-                # Formatting
-                metrics_comp['CAGR'] = metrics_comp['CAGR'].apply(lambda x: f"{x:.2%}")
-                metrics_comp['Volatility'] = metrics_comp['Volatility'].apply(lambda x: f"{x:.2%}")
-                metrics_comp['Sharpe'] = metrics_comp['Sharpe'].apply(lambda x: f"{x:.2f}")
-                metrics_comp['Sortino'] = metrics_comp['Sortino'].apply(lambda x: f"{x:.2f}")
-                metrics_comp['Max Drawdown'] = metrics_comp['Max Drawdown'].apply(lambda x: f"{x:.2%}")
-                metrics_comp['Calmar'] = metrics_comp['Calmar'].apply(lambda x: f"{x:.2f}")
-                metrics_comp['Turnover'] = metrics_comp['Turnover'].apply(lambda x: f"{x:.2f}x")
-                metrics_comp['Rebalancing Cost'] = metrics_comp['Rebalancing Cost'].apply(lambda x: f"${x:,.0f}")
-                
-                st.table(metrics_comp)
+                    # Metrics Table
+                    st.divider()
+                    st.markdown("**Performance Metrics Summary (Selected Window)**")
+                    metrics_comp = pd.DataFrame({
+                        'Strategy': lab_results_disp['metrics'],
+                        'Benchmark': bench_results_disp['metrics']
+                    }).T
+                    for col in ['CAGR', 'Volatility', 'Max Drawdown']:
+                        if col in metrics_comp.columns: metrics_comp[col] = metrics_comp[col].apply(lambda x: f"{x:.2%}")
+                    for col in ['Sharpe', 'Sortino', 'Calmar']:
+                        if col in metrics_comp.columns: metrics_comp[col] = metrics_comp[col].apply(lambda x: f"{x:.2f}")
+                    if 'Turnover' in metrics_comp.columns: metrics_comp['Turnover'] = metrics_comp['Turnover'].apply(lambda x: f"{x:.2f}x")
+                    st.table(metrics_comp)
 
-            with res_tab2:
+                    st.table(metrics_comp)
+
+            # --- ROLLING ANALYSIS TAB CONTENT ---
+            with res_tab_roll:
                 # Rolling Analysis configuration
                 col_roll1, col_roll2 = st.columns([1, 2])
                 with col_roll1:
@@ -2883,48 +2935,124 @@ def main():
                         # Layout: Charts on left, Table on right
                         col_charts, col_table = st.columns([2, 1])
                         
-                        theme = create_theme()
-                        
                         with col_charts:
                             # 1. Rolling Return Chart
                             fig_roll_ret = go.Figure()
                             fig_roll_ret.add_trace(go.Scatter(
                                 x=strat_roll['cagr'].index, y=strat_roll['cagr'],
-                                name='Strategy', line=dict(color='#ff6b35', width=2)
+                                name='Strategy', 
+                                mode='lines+markers',
+                                line=dict(color='#ff6b35', width=2),
+                                marker=dict(size=12, opacity=0.01), # Large invisible hit area for single-click
+                                hovertemplate='%{y:.1%}<br>%{x|%b %Y}<extra>Strategy</extra>'
                             ))
                             fig_roll_ret.add_trace(go.Scatter(
                                 x=bench_roll['cagr'].index, y=bench_roll['cagr'],
-                                name='Benchmark', line=dict(color='#888', dash='dash')
+                                name='Benchmark', 
+                                mode='lines',
+                                line=dict(color='#888', dash='dash'),
+                                hovertemplate='%{y:.1%}<br>%{x|%b %Y}<extra>Benchmark</extra>'
                             ))
                             fig_roll_ret.update_layout(
                                 title=f"Rolling {holding_duration}Y Return (CAGR)",
-                                **{k:v for k,v in layout_args.items() if k not in ['height', 'margin']},
+                                **{k:v for k,v in layout_args.items() if k not in ['height', 'margin', 'hovermode']},
                                 height=400,
-                                margin=dict(l=50, r=20, t=50, b=20)
+                                margin=dict(l=50, r=20, t=50, b=20),
+                                hovermode='closest', # Closest hover is much better for click detection than 'x unified'
+                                dragmode='pan',
+                                clickmode='event+select'
                             )
                             fig_roll_ret.update_yaxes(tickformat='.1%', gridcolor='#1a1a1a')
-                            fig_roll_ret.update_xaxes(**theme['xaxis'])
-                            st.plotly_chart(fig_roll_ret, width='stretch')
+                            # Add vertical spikeline
+                            fig_roll_ret.update_xaxes(
+                                **theme['xaxis'],
+                                showspikes=True,
+                                spikethickness=1,
+                                spikedash='dot',
+                                spikemode='across',
+                                spikesnap='cursor'
+                            )
+                            # Enable interaction with rotated key
+                            reset_idx = st.session_state.get('lab_reset_count', 0)
+                            sel_ret = st.plotly_chart(
+                                fig_roll_ret, 
+                                width='stretch', 
+                                on_select="rerun", 
+                                selection_mode=["points", "box"],
+                                key=f"roll_ret_chart_{holding_duration}_{reset_idx}",
+                                config={'displayModeBar': True, 'modeBarButtonsToRemove': ['select2d', 'lasso2d', 'zoom2d', 'pan2d']}
+                            )
+                            # DEBUG: st.toast(f"Ret Chart: {str(sel_ret)[:50]}...")
+                            
+                            # Immediate detection logic
+                            def process_selection(sel_data, dur):
+                                if not sel_data or not isinstance(sel_data, dict): return False
+                                # Plotly click events inside on_select can put data in 'selection' or directly in 'points'
+                                pts = sel_data.get("selection", {}).get("points", []) or sel_data.get("points", [])
+                                if not pts and "selection" in sel_data:
+                                    # Handle case where selection might be a list directly
+                                    if isinstance(sel_data["selection"], list):
+                                        pts = sel_data["selection"]
+                                
+                                if not pts: return False
+                                try:
+                                    new_start = pd.to_datetime(pts[0]['x'])
+                                    if not st.session_state.get('lab_drilldown_active') or st.session_state.get('lab_drilldown_start') != new_start:
+                                        st.session_state.lab_drilldown_active = True
+                                        st.session_state.lab_drilldown_start = new_start
+                                        st.session_state.lab_drilldown_duration = dur
+                                        st.rerun()
+                                        return True
+                                except Exception:
+                                    return False
+                                return False
+
+                            process_selection(sel_ret, holding_duration)
                             
                             # 2. Rolling Volatility Chart
                             fig_roll_vol = go.Figure()
                             fig_roll_vol.add_trace(go.Scatter(
                                 x=strat_roll['vol'].index, y=strat_roll['vol'],
-                                name='Strategy', line=dict(color='#ff6b35', width=2)
+                                name='Strategy', 
+                                mode='lines+markers',
+                                line=dict(color='#ff6b35', width=2),
+                                marker=dict(size=12, opacity=0.01),
+                                hovertemplate='%{y:.1%}<br>%{x|%b %Y}<extra>Strategy</extra>'
                             ))
                             fig_roll_vol.add_trace(go.Scatter(
                                 x=bench_roll['vol'].index, y=bench_roll['vol'],
-                                name='Benchmark', line=dict(color='#888', dash='dash')
+                                name='Benchmark', 
+                                mode='lines',
+                                line=dict(color='#888', dash='dash'),
+                                hovertemplate='%{y:.1%}<br>%{x|%b %Y}<extra>Benchmark</extra>'
                             ))
                             fig_roll_vol.update_layout(
                                 title=f"Rolling {holding_duration}Y Volatility",
-                                **{k:v for k,v in layout_args.items() if k not in ['height', 'margin']},
+                                **{k:v for k,v in layout_args.items() if k not in ['height', 'margin', 'hovermode']},
                                 height=350,
-                                margin=dict(l=50, r=20, t=50, b=20)
+                                margin=dict(l=50, r=20, t=50, b=20),
+                                hovermode='closest',
+                                dragmode='pan',
+                                clickmode='event+select'
                             )
                             fig_roll_vol.update_yaxes(tickformat='.1%', gridcolor='#1a1a1a')
-                            fig_roll_vol.update_xaxes(**theme['xaxis'])
-                            st.plotly_chart(fig_roll_vol, width='stretch')
+                            fig_roll_vol.update_xaxes(
+                                **theme['xaxis'],
+                                showspikes=True,
+                                spikethickness=1,
+                                spikedash='dot',
+                                spikemode='across',
+                                spikesnap='cursor'
+                            )
+                            sel_vol = st.plotly_chart(
+                                fig_roll_vol, 
+                                width='stretch', 
+                                on_select="rerun", 
+                                selection_mode=["points", "box"],
+                                key=f"roll_vol_chart_{holding_duration}_{reset_idx}",
+                                config={'displayModeBar': True, 'modeBarButtonsToRemove': ['select2d', 'lasso2d', 'zoom2d', 'pan2d']}
+                            )
+                            process_selection(sel_vol, holding_duration)
 
                         with col_table:
                             st.markdown(f"**Key Metrics ({holding_duration}Y Rolling)**")
