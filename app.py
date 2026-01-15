@@ -906,7 +906,7 @@ def plot_fred_series(data: pd.Series, title: str, subtitle: str, is_transformed:
         if pd.to_datetime(start) <= data.index[-1] and pd.to_datetime(end) >= data.index[0]:
             fig.add_vrect(
                 x0=start, x1=end,
-                fillcolor="#ffffff", opacity=0.07,
+                fillcolor=theme['recession_color'], opacity=0.07,
                 layer="below", line_width=0
             )
             
@@ -920,12 +920,12 @@ def plot_fred_series(data: pd.Series, title: str, subtitle: str, is_transformed:
     
     fig.update_layout(
         title=dict(
-            text=f"<b>{title}</b><br><span style='font-size: 10px; color: #888;'>{subtitle}</span><br><span style='font-size: 9px; color: #555;'>{stats_str}</span>",
-            font=dict(family='IBM Plex Mono', size=13, color='#e8e8e8'),
+            text=f"<b>{title}</b><br><span style='font-size: 10px; color: {theme['text_secondary']};'>{subtitle}</span><br><span style='font-size: 9px; color: {theme['text_muted']};'>{stats_str}</span>",
+            font=dict(family='IBM Plex Mono', size=13, color=theme['font']['color']),
             x=0.05, y=0.92
         ),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor=theme['paper_bgcolor'],
+        plot_bgcolor=theme['plot_bgcolor'],
         margin=dict(l=40, r=20, t=75, b=40),
         height=280,
         xaxis=dict(**theme['xaxis']),
@@ -936,35 +936,59 @@ def plot_fred_series(data: pd.Series, title: str, subtitle: str, is_transformed:
 
 
 def create_theme():
-    return {
-        'paper_bgcolor': '#0a0a0a',
-        'plot_bgcolor': '#111111',
-        'font': {'family': 'IBM Plex Mono', 'color': '#888888', 'size': 11},
-        'xaxis': {'gridcolor': '#1a1a1a', 'linecolor': '#2a2a2a'},
-        'yaxis': {'gridcolor': '#1a1a1a', 'linecolor': '#2a2a2a'}
-    }
+    theme_name = st.session_state.get('theme', 'dark')
+    if theme_name == 'light':
+        return {
+            'paper_bgcolor': '#ffffff',
+            'plot_bgcolor': '#ffffff',
+            'gridcolor': '#f0f0f0',
+            'linecolor': '#e0e0e0',
+            'label_color': '#444444',
+            'font': {'family': 'IBM Plex Mono', 'color': '#1a1a1a', 'size': 11},
+            'xaxis': {'gridcolor': '#f0f0f0', 'linecolor': '#e0e0e0', 'tickcolor': '#555', 'tickfont': {'color': '#666'}},
+            'yaxis': {'gridcolor': '#f0f0f0', 'linecolor': '#e0e0e0', 'tickcolor': '#555', 'tickfont': {'color': '#666'}},
+            'recession_color': '#cccccc',
+            'border_color': '#dee2e6',
+            'text_secondary': '#444444',
+            'text_muted': '#666666'
+        }
+    else:
+        return {
+            'paper_bgcolor': '#0a0a0a',
+            'plot_bgcolor': '#111111',
+            'gridcolor': '#1a1a1a',
+            'linecolor': '#2a2a2a',
+            'label_color': '#888888',
+            'font': {'family': 'IBM Plex Mono', 'color': '#e8e8e8', 'size': 11},
+            'xaxis': {'gridcolor': '#1a1a1a', 'linecolor': '#2a2a2a', 'tickcolor': '#888', 'tickfont': {'color': '#888'}},
+            'yaxis': {'gridcolor': '#1a1a1a', 'linecolor': '#2a2a2a', 'tickcolor': '#888', 'tickfont': {'color': '#888'}},
+            'recession_color': '#ffffff',
+            'border_color': '#2a2a2a',
+            'text_secondary': '#888888',
+            'text_muted': '#555555'
+        }
 
 
 def plot_allocation(weights: dict) -> go.Figure:
+    theme = create_theme()
     colors = {'EQUITY': '#ff6b35', 'BONDS': '#4da6ff', 'GOLD': '#ffd700'}
     
     fig = go.Figure(data=[go.Pie(
         labels=list(weights.keys()),
         values=list(weights.values()),
         hole=0.65,
-        marker=dict(colors=[colors[k] for k in weights.keys()], line=dict(color='#0a0a0a', width=2)),
+        marker=dict(colors=[colors[k] for k in weights.keys()], line=dict(color=theme['paper_bgcolor'], width=2)),
         textinfo='label+percent',
-        textfont=dict(family='IBM Plex Mono', size=11, color='#e8e8e8')
+        textfont=dict(family='IBM Plex Mono', size=11, color=theme['font']['color'])
     )])
     
-    theme = create_theme()
     fig.update_layout(
         showlegend=False,
         paper_bgcolor=theme['paper_bgcolor'],
         margin=dict(l=20, r=20, t=20, b=20),
         height=250,
         annotations=[dict(text='<b>TARGET</b>', x=0.5, y=0.5,
-                         font=dict(family='IBM Plex Mono', size=12, color='#888'), showarrow=False)]
+                         font=dict(family='IBM Plex Mono', size=12, color=theme['label_color']), showarrow=False)]
     )
     return fig
 
@@ -984,13 +1008,13 @@ def plot_assets(prices: pd.DataFrame) -> go.Figure:
     
     fig.update_layout(
         showlegend=True,
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0, font=dict(color=theme['font']['color'])),
         paper_bgcolor=theme['paper_bgcolor'],
         plot_bgcolor=theme['plot_bgcolor'],
         margin=dict(l=50, r=20, t=30, b=40),
         height=280,
-        xaxis=dict(gridcolor='#1a1a1a'),
-        yaxis=dict(gridcolor='#1a1a1a', title='Indexed (100)')
+        xaxis=dict(gridcolor=theme['gridcolor'], tickfont=dict(color=theme['label_color'])),
+        yaxis=dict(gridcolor=theme['gridcolor'], title=dict(text='Indexed (100)', font=dict(color=theme['label_color'])), tickfont=dict(color=theme['label_color']))
     )
     return fig
 
@@ -999,7 +1023,7 @@ def plot_ect(ect: pd.Series) -> go.Figure:
     theme = create_theme()
     
     fig = go.Figure()
-    fig.add_hline(y=0, line_dash="dash", line_color="#2a2a2a")
+    fig.add_hline(y=0, line_dash="dash", line_color=theme['label_color'])
     
     std = ect.std()
     fig.add_hrect(y0=-std, y1=std, fillcolor="rgba(77, 166, 255, 0.05)", line_width=0)
@@ -1016,8 +1040,8 @@ def plot_ect(ect: pd.Series) -> go.Figure:
         plot_bgcolor=theme['plot_bgcolor'],
         margin=dict(l=50, r=20, t=10, b=40),
         height=150,
-        xaxis=dict(gridcolor='#1a1a1a'),
-        yaxis=dict(gridcolor='#1a1a1a', title='ECT')
+        xaxis=dict(gridcolor=theme['gridcolor'], tickfont=dict(color=theme['label_color'])),
+        yaxis=dict(gridcolor=theme['gridcolor'], title=dict(text='ECT', font=dict(color=theme['label_color'])), tickfont=dict(color=theme['label_color']))
     )
     return fig
 
@@ -1045,19 +1069,20 @@ def plot_feature_heatmap(selection_history: pd.DataFrame, descriptions: dict) ->
         z=df_plot.values,
         x=df_plot.columns,
         y=y_labels,
-        colorscale=[[0, '#0a0a0a'], [0.5, 'rgba(77, 166, 255, 0.2)'], [1, '#4da6ff']],
+        colorscale=[[0, theme['plot_bgcolor']], [0.5, 'rgba(77, 166, 255, 0.2)'], [1, '#4da6ff']],
         showscale=True,
-        colorbar=dict(title=dict(text='Selection Prob', side='right'), thickness=15, len=0.7)
+        colorbar=dict(title=dict(text='Selection Prob', side='right', font=dict(color=theme['label_color'])), thickness=15, len=0.7, tickfont=dict(color=theme['label_color']))
     ))
     
     fig.update_layout(
-        title=dict(text='STABILITY SELECTION: FEATURE PERSISTENCE OVER TIME', font=dict(size=12, color='#888')),
+        title=dict(text='STABILITY SELECTION: FEATURE PERSISTENCE OVER TIME', font=dict(size=12, color=theme['font']['color'])),
         paper_bgcolor=theme['paper_bgcolor'],
         plot_bgcolor=theme['plot_bgcolor'],
-        xaxis=dict(title='Estimation Date', gridcolor='#1a1a1a'),
-        yaxis=dict(gridcolor='#1a1a1a', tickfont=dict(size=9)),
+        xaxis=dict(title=dict(text='Estimation Date', font=dict(color=theme['label_color'])), gridcolor=theme['gridcolor'], tickfont=dict(color=theme['label_color'])),
+        yaxis=dict(gridcolor=theme['gridcolor'], tickfont=dict(size=9, color=theme['label_color'])),
         margin=dict(l=10, r=10, t=40, b=40),
-        height=500
+        height=500,
+        font=theme['font']
     )
     
     return fig
@@ -1099,8 +1124,9 @@ def plot_stability_boxplot(results: dict, asset: str, descriptions: dict = None)
         margin=dict(l=40, r=20, t=20, b=60),
         height=250,
         showlegend=False,
-        xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
-        yaxis=dict(gridcolor='#1a1a1a', title='Coefficient')
+        xaxis=dict(tickangle=-45, tickfont=dict(size=9, color=theme['label_color'])),
+        yaxis=dict(gridcolor=theme['gridcolor'], title=dict(text='Coefficient', font=dict(color=theme['label_color'])), tickfont=dict(color=theme['label_color'])),
+        font=theme['font']
     )
     return fig
 
@@ -1132,15 +1158,16 @@ def plot_trend_bars(trend_df: pd.DataFrame, variables: list, descriptions: dict 
         hoverinfo='y+text+x'
     ))
     
-    fig.add_hline(y=0, line_dash="dash", line_color="#2a2a2a")
+    fig.add_hline(y=0, line_dash="dash", line_color=theme['label_color'])
     
     fig.update_layout(
         paper_bgcolor=theme['paper_bgcolor'],
         plot_bgcolor=theme['plot_bgcolor'],
+        font=theme['font'],
         margin=dict(l=40, r=20, t=20, b=60),
         height=250,
-        xaxis=dict(tickangle=-45),
-        yaxis=dict(gridcolor='#1a1a1a', title='5Y Slope (Annualized)')
+        xaxis=dict(tickangle=-45, tickfont=dict(color=theme['label_color'])),
+        yaxis=dict(gridcolor=theme['gridcolor'], title=dict(text='5Y Slope (Annualized)', font=dict(color=theme['label_color'])), tickfont=dict(color=theme['label_color'])),
     )
     return fig
 
@@ -1184,25 +1211,26 @@ def plot_driver_vs_asset(feat_data: pd.DataFrame, asset_returns: pd.DataFrame,
     
     fig.update_layout(
         title=dict(text=title_text, 
-                  font=dict(family='IBM Plex Mono', size=11, color='#888')),
+                  font=dict(family='IBM Plex Mono', size=11, color=theme['font']['color'])),
         paper_bgcolor=theme['paper_bgcolor'],
         plot_bgcolor=theme['plot_bgcolor'],
         margin=dict(l=50, r=50, t=40, b=40),
         height=350,
         showlegend=True,
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0, font=dict(color=theme['label_color'])),
         hovermode='x unified',
         xaxis=dict(
-            gridcolor='#1a1a1a',
+            gridcolor=theme['gridcolor'],
             showspikes=True,
             spikemode='across',
             spikesnap='cursor',
             spikedash='dash',
             spikethickness=1,
-            spikecolor='#555'
+            spikecolor=theme['text_muted'],
+            tickfont=dict(color=theme['label_color'])
         ),
-        yaxis=dict(gridcolor='#1a1a1a', side='left', title=f'Macro: {feat_name}'),
-        yaxis2=dict(gridcolor='#1a1a1a', overlaying='y', side='right', title='Forward Return (Annualized)', tickformat='.0%')
+        yaxis=dict(gridcolor=theme['gridcolor'], side='left', title=dict(text=f'Macro: {feat_name}', font=dict(color=theme['label_color'])), tickfont=dict(color=theme['label_color'])),
+        yaxis2=dict(gridcolor=theme['gridcolor'], overlaying='y', side='right', title=dict(text='Forward Return (Annualized)', font=dict(color=theme['label_color'])), tickformat='.0%', tickfont=dict(color=theme['label_color']))
     )
     return fig
 
@@ -1233,14 +1261,15 @@ def plot_driver_scatter(feat_data: pd.DataFrame, asset_returns: pd.DataFrame,
     )
     
     fig.update_layout(
+        title=dict(font=dict(color=theme['font']['color'])),
         paper_bgcolor=theme['paper_bgcolor'],
         plot_bgcolor=theme['plot_bgcolor'],
         font=theme['font'],
         margin=dict(l=50, r=20, t=40, b=40),
         height=400,
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
-        xaxis=dict(gridcolor='#1a1a1a', title=feat_name),
-        yaxis=dict(gridcolor='#1a1a1a', title=f"{asset} Return", tickformat='.1%')
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0, font=dict(color=theme['label_color'])),
+        xaxis=dict(gridcolor=theme['gridcolor'], title=dict(text=feat_name, font=dict(color=theme['label_color'])), tickfont=dict(color=theme['label_color'])),
+        yaxis=dict(gridcolor=theme['gridcolor'], title=dict(text=f"{asset} Return", font=dict(color=theme['label_color'])), tickformat='.1%', tickfont=dict(color=theme['label_color']))
     )
     return fig
 
@@ -1267,17 +1296,15 @@ def plot_rolling_correlation(feat_data: pd.DataFrame, asset_returns: pd.DataFram
         name='Rolling Correlation'
     ))
     
-    fig.add_hline(y=0, line_dash="dash", line_color="#444")
-    
     fig.update_layout(
-        title=f"Rolling {window}M Correlation: {feat_name} vs {asset}",
+        title=dict(text=f"Rolling {window}M Correlation: {feat_name} vs {asset}", font=dict(color=theme['font']['color'])),
         paper_bgcolor=theme['paper_bgcolor'],
         plot_bgcolor=theme['plot_bgcolor'],
         font=theme['font'],
         margin=dict(l=50, r=20, t=40, b=40),
         height=300,
-        xaxis=dict(gridcolor='#1a1a1a'),
-        yaxis=dict(gridcolor='#1a1a1a', title='Correlation', range=[-1, 1])
+        xaxis=dict(gridcolor=theme['gridcolor'], tickfont=dict(color=theme['label_color'])),
+        yaxis=dict(gridcolor=theme['gridcolor'], title=dict(text='Correlation', font=dict(color=theme['label_color'])), range=[-1, 1], tickfont=dict(color=theme['label_color']))
     )
     return fig
 
@@ -1307,14 +1334,15 @@ def plot_quintile_analysis(feat_data: pd.DataFrame, asset_returns: pd.DataFrame,
     )
     
     fig.update_layout(
+        title=dict(font=dict(color=theme['font']['color'])),
         paper_bgcolor=theme['paper_bgcolor'],
         plot_bgcolor=theme['plot_bgcolor'],
         font=theme['font'],
         margin=dict(l=50, r=20, t=40, b=40),
         height=350,
         showlegend=False,
-        xaxis=dict(gridcolor='#1a1a1a', title=f"{feat_name} Quintiles"),
-        yaxis=dict(gridcolor='#1a1a1a', title=f'Avg {horizon_months}M Forward Return', tickformat='.1%')
+        xaxis=dict(gridcolor=theme['gridcolor'], title=dict(text=f"{feat_name} Quintiles", font=dict(color=theme['label_color'])), tickfont=dict(color=theme['label_color'])),
+        yaxis=dict(gridcolor=theme['gridcolor'], title=dict(text=f'Avg {horizon_months}M Forward Return', font=dict(color=theme['label_color'])), tickformat='.1%', tickfont=dict(color=theme['label_color']))
     )
     return fig
 
@@ -1371,27 +1399,27 @@ def plot_combined_driver_analysis(feat_data: pd.DataFrame, asset_returns: pd.Dat
         hovertemplate="<b>Correlation</b>: %{y:.2f}<extra></extra>"
     ), row=2, col=1)
     
-    fig.add_hline(y=0, line_dash="dash", line_color="#444", row=2, col=1)
+    fig.add_hline(y=0, line_dash="dash", line_color=theme['label_color'], row=2, col=1)
     
     # Layout updates
     fig.update_layout(
         title=dict(text=f"{feat_name} ({desc}) Analysis", 
-                  font=dict(family='IBM Plex Mono', size=12, color='#888')),
+                  font=dict(family='IBM Plex Mono', size=12, color=theme['label_color'])),
         paper_bgcolor=theme['paper_bgcolor'],
         plot_bgcolor=theme['plot_bgcolor'],
         margin=dict(l=50, r=50, t=60, b=40),
         height=550,
         showlegend=True,
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0, font=dict(color=theme['label_color'])),
         hovermode='x unified'
     )
     
     # Axis styling
-    fig.update_xaxes(gridcolor='#1a1a1a', row=1, col=1)
-    fig.update_xaxes(gridcolor='#1a1a1a', row=2, col=1)
-    fig.update_yaxes(title_text=f"Macro: {feat_name}", gridcolor='#1a1a1a', row=1, col=1, secondary_y=False)
-    fig.update_yaxes(title_text=f"{horizon_months}M Fwd Return", gridcolor='#1a1a1a', tickformat='.0%', row=1, col=1, secondary_y=True)
-    fig.update_yaxes(title_text=f"{window}M Correlation", gridcolor='#1a1a1a', range=[-1, 1], row=2, col=1)
+    fig.update_xaxes(gridcolor=theme['gridcolor'], tickfont=dict(color=theme['label_color']), row=1, col=1)
+    fig.update_xaxes(gridcolor=theme['gridcolor'], tickfont=dict(color=theme['label_color']), row=2, col=1)
+    fig.update_yaxes(title_text=f"Macro: {feat_name}", gridcolor=theme['gridcolor'], row=1, col=1, secondary_y=False, tickfont=dict(color=theme['label_color']), title_font=dict(color=theme['label_color']))
+    fig.update_yaxes(title_text=f"{horizon_months}M Fwd Return", gridcolor=theme['gridcolor'], tickformat='.0%', row=1, col=1, secondary_y=True, tickfont=dict(color=theme['label_color']), title_font=dict(color=theme['label_color']))
+    fig.update_yaxes(title_text=f"{window}M Correlation", gridcolor=theme['gridcolor'], range=[-1, 1], row=2, col=1, tickfont=dict(color=theme['label_color']), title_font=dict(color=theme['label_color']))
     
     return fig
 
@@ -1431,7 +1459,7 @@ def plot_variable_survival(stability_results_map: dict, asset: str, descriptions
     labels = []
     for feat in counts.index:
         desc = descriptions.get(feat.split('_')[0], feat) if descriptions else feat
-        labels.append(f"<b>{feat}</b><br><span style='font-size:9px; color:#666;'>{desc}</span>")
+        labels.append(f"<b>{feat}</b><br><span style='font-size:9px; color:{theme['text_muted']};'>{desc}</span>")
     
     # Create the chart
     fig = go.Figure(go.Bar(
@@ -1441,7 +1469,7 @@ def plot_variable_survival(stability_results_map: dict, asset: str, descriptions
         marker=dict(
             color=counts.values,
             colorscale='Oranges',
-            line=dict(color='#0a0a0a', width=1)
+            line=dict(color=theme['paper_bgcolor'], width=1)
         ),
         text=counts.values,
         textposition='auto',
@@ -1674,19 +1702,20 @@ def plot_backtest(actual_returns: pd.Series,
         height=350,
         hovermode='x',
         hoverlabel=dict(
-            bgcolor='rgba(0,0,0,0.6)',
-            font=dict(family='IBM Plex Mono', size=11)
+            bgcolor='rgba(0,0,0,0.6)' if st.session_state.theme == 'dark' else 'rgba(255,255,255,0.8)',
+            font=dict(family='IBM Plex Mono', size=11, color=theme['font']['color'])
         ),
         xaxis=dict(
-            gridcolor='#1a1a1a',
+            gridcolor=theme['gridcolor'],
             showspikes=True,
             spikemode='across',
             spikesnap='cursor',
             spikedash='dash',
             spikethickness=1,
-            spikecolor='#555'
+            spikecolor=theme['text_muted'],
+            tickfont=dict(color=theme['label_color'])
         ),
-        yaxis=dict(gridcolor='#1a1a1a', title='Annualized Return'),
+        yaxis=dict(gridcolor=theme['gridcolor'], title=dict(text='Annualized Return', font=dict(color=theme['label_color'])), tickfont=dict(color=theme['label_color'])),
         yaxis2=dict(
             range=[0, 1],
             overlaying='y',
@@ -1795,14 +1824,31 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded"
     )
-    
+    if 'theme' not in st.session_state:
+        st.session_state.theme = 'dark'
+        
     # Sidebar Configuration (Moved up for header visibility)
     with st.sidebar:
         st.markdown("""
-        <div style="padding: 1rem 0; border-bottom: 1px solid #2a2a2a; margin-bottom: 1rem;">
-            <span style="font-family: 'IBM Plex Mono'; font-size: 0.8rem; color: #ff6b35;">CONFIG</span>
+        <div style="padding: 1rem 0; border-bottom: 1px solid var(--border-color); margin-bottom: 1rem;">
+            <span style="font-family: 'IBM Plex Mono'; font-size: 0.8rem; color: #ff6b35;">CONFIG & THEME</span>
         </div>
         """, unsafe_allow_html=True)
+        
+        # Theme Toggle
+        theme_col1, theme_col2 = st.columns([1, 1])
+        with theme_col1:
+            if st.button("🌙 Dark", use_container_width=True, 
+                         type="primary" if st.session_state.theme == 'dark' else "secondary"):
+                st.session_state.theme = 'dark'
+                st.rerun()
+        with theme_col2:
+            if st.button("☀ Light", use_container_width=True,
+                         type="primary" if st.session_state.theme == 'light' else "secondary"):
+                st.session_state.theme = 'light'
+                st.rerun()
+        
+        st.markdown("<br>", unsafe_allow_html=True)
         
         horizon_months = st.slider("Horizon (Months)", 3, 36, 12, help="Forward return horizon")
         l1_ratio = st.slider("L1 Ratio", 0.1, 0.9, 0.5, 0.1, help="Elastic Net mixing parameter")
@@ -1814,60 +1860,83 @@ def main():
         risk_free_rate = st.sidebar.number_input("Risk-Free Rate (%)", 0.0, 10.0, 4.0) / 100
     
     
-    st.markdown("""
+    # Theme variables
+    if st.session_state.theme == 'light':
+        bg_primary = "#ffffff"
+        bg_secondary = "#f8f9fa"
+        bg_tertiary = "#f1f3f5"
+        border_color = "#dee2e6"
+        text_primary = "#1a1a1a"
+        text_secondary = "#4a4a4a"
+        text_muted = "#666666"
+        header_gradient = "linear-gradient(180deg, #f8f9fa 0%, #ffffff 100%)"
+        plot_grid = "#f5f5f5"
+    else:
+        bg_primary = "#0a0a0a"
+        bg_secondary = "#111111"
+        bg_tertiary = "#1a1a1a"
+        border_color = "#2a2a2a"
+        text_primary = "#e8e8e8"
+        text_secondary = "#888888"
+        text_muted = "#555555"
+        header_gradient = "linear-gradient(180deg, #111111 0%, #0a0a0a 100%)"
+        plot_grid = "#1a1a1a"
+
+    st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
     
-    :root {
-        --bg-primary: #0a0a0a;
-        --bg-secondary: #111111;
-        --bg-tertiary: #1a1a1a;
-        --border-color: #2a2a2a;
-        --text-primary: #e8e8e8;
-        --text-secondary: #888888;
-        --text-muted: #555555;
+    :root {{
+        --bg-primary: {bg_primary};
+        --bg-secondary: {bg_secondary};
+        --bg-tertiary: {bg_tertiary};
+        --border-color: {border_color};
+        --text-primary: {text_primary};
+        --text-secondary: {text_secondary};
+        --text-muted: {text_muted};
+        --header-gradient: {header_gradient};
         --accent-orange: #ff6b35;
         --accent-green: #00d26a;
         --accent-red: #ff4757;
         --accent-blue: #4da6ff;
         --accent-gold: #ffd700;
-    }
+    }}
     
-    .stApp {
+    .stApp {{
         background-color: var(--bg-primary);
         font-family: 'IBM Plex Sans', sans-serif;
-    }
+    }}
     
-    .main .block-container {
+    .main .block-container {{
         padding: 1rem 2rem;
         max-width: 100%;
-    }
+    }}
     
-    .header-container {
-        background: linear-gradient(180deg, #111111 0%, #0a0a0a 100%);
+    .header-container {{
+        background: var(--header-gradient);
         border-bottom: 1px solid var(--border-color);
         padding: 1rem 0;
         margin-bottom: 1.5rem;
-    }
+    }}
     
-    .header-title {
+    .header-title {{
         font-family: 'IBM Plex Mono', monospace;
         font-size: 1.1rem;
         font-weight: 600;
         color: var(--accent-orange);
         letter-spacing: 0.5px;
         margin: 0;
-    }
+    }}
     
-    .header-subtitle {
+    .header-subtitle {{
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.75rem;
         color: var(--text-secondary);
         letter-spacing: 1px;
         margin-top: 0.25rem;
-    }
+    }}
     
-    .panel-header {
+    .panel-header {{
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.7rem;
         font-weight: 600;
@@ -1877,44 +1946,44 @@ def main():
         border-bottom: 1px solid var(--border-color);
         padding-bottom: 0.5rem;
         margin-bottom: 0.75rem;
-    }
+    }}
     
-    .metric-card {
+    .metric-card {{
         background-color: var(--bg-tertiary);
         border: 1px solid var(--border-color);
         border-radius: 2px;
         padding: 0.75rem;
         text-align: center;
-    }
+    }}
     
-    .metric-label {
+    .metric-label {{
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.65rem;
         color: var(--text-muted);
         letter-spacing: 1px;
         text-transform: uppercase;
-    }
+    }}
     
-    .metric-value {
+    .metric-value {{
         font-family: 'IBM Plex Mono', monospace;
         font-size: 1.25rem;
         font-weight: 600;
         color: var(--text-primary);
         margin-top: 0.25rem;
-    }
+    }}
     
-    .metric-value.positive { color: var(--accent-green); }
-    .metric-value.negative { color: var(--accent-red); }
-    .metric-value.warning { color: var(--accent-orange); }
+    .metric-value.positive {{ color: var(--accent-green); }}
+    .metric-value.negative {{ color: var(--accent-red); }}
+    .metric-value.warning {{ color: var(--accent-orange); }}
     
-    .data-table {
+    .data-table {{
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.75rem;
         width: 100%;
         border-collapse: collapse;
-    }
+    }}
     
-    .data-table th {
+    .data-table th {{
         background-color: var(--bg-tertiary);
         color: var(--text-secondary);
         font-weight: 500;
@@ -1922,65 +1991,86 @@ def main():
         padding: 0.5rem;
         border-bottom: 1px solid var(--border-color);
         text-align: left;
-    }
+    }}
     
-    .data-table td {
+    .data-table td {{
         color: var(--text-primary);
         padding: 0.5rem;
         border-bottom: 1px solid var(--border-color);
-    }
+    }}
     
-    section[data-testid="stSidebar"] {
+    section[data-testid="stSidebar"] {{
         background-color: var(--bg-secondary);
         border-right: 1px solid var(--border-color);
-    }
+    }}
     
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
+    #MainMenu {{visibility: hidden;}}
+    footer {{visibility: hidden;}}
+    header {{visibility: hidden;}}
     
-    .stButton > button {
+    .stButton > button {{
         background-color: var(--bg-tertiary);
         border: 1px solid var(--border-color);
         color: var(--text-primary);
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.75rem;
         transition: all 0.2s;
-    }
+    }}
     
-    .stButton > button:hover {
+    .stButton > button:hover {{
         background-color: var(--accent-orange);
         border-color: var(--accent-orange);
         color: #000;
-    }
+    }}
     
-    .stTabs [data-baseweb="tab-list"] { background-color: var(--bg-secondary); gap: 0; }
+    .stTabs [data-baseweb="tab-list"] {{ background-color: var(--bg-secondary); gap: 0; }}
     
-    .stTabs [data-baseweb="tab"] {
+    .stTabs [data-baseweb="tab"] {{
         background-color: var(--bg-tertiary);
         border: 1px solid var(--border-color);
         color: var(--text-secondary);
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.7rem;
         padding: 0 20px;
-    }
+    }}
     
-    .stTabs [aria-selected="true"] {
+    .stTabs [aria-selected="true"] {{
         background-color: var(--bg-primary);
         color: var(--accent-orange);
         border-bottom-color: var(--bg-primary);
-    }
+    }}
     
-    .debug-box {
-        background: #1a1a1a;
-        border: 1px solid #333;
+    .debug-box {{
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
         padding: 0.75rem;
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.75rem;
-        color: #888;
+        color: var(--text-secondary);
         margin: 0.5rem 0;
         border-radius: 2px;
-    }
+    }}
+
+    /* Streamlit overrides for light mode readability */
+    label, p, span {{
+        color: var(--text-primary) !important;
+    }}
+    .stSlider label, .stNumberInput label, .stSelectbox label {{
+        color: var(--text-secondary) !important;
+        font-weight: 500 !important;
+    }}
+    div[data-baseweb="select"] > div {{
+        background-color: var(--bg-tertiary) !important;
+        color: var(--text-primary) !important;
+        border: 1px solid var(--border-color) !important;
+    }}
+    input {{
+        color: var(--text-primary) !important;
+        background-color: var(--bg-tertiary) !important;
+    }}
+    .stMarkdown div p {{
+        color: var(--text-secondary) !important;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -2069,7 +2159,7 @@ def main():
             st.markdown('<div class="panel-header">STRATEGIC RATIONALE</div>', unsafe_allow_html=True)
             narrative = generate_narrative(expected_returns, driver_attributions, regime_status)
             st.markdown(f"""
-            <div style="background:#111; border:1px solid #2a2a2a; padding:1rem; border-radius:2px; font-size:0.85rem; color:#ccc;">
+            <div style="background:var(--bg-secondary); border:1px solid var(--border-color); padding:1rem; border-radius:2px; font-size:0.85rem; color:var(--text-secondary);">
                 {narrative}
             </div>
             """, unsafe_allow_html=True)
@@ -2217,6 +2307,7 @@ def main():
             sorted_series = sorted(list(df_full.columns))
 
         if not df_full.empty and sorted_series:
+            theme = create_theme()
             has_assets = len(selected_assets) > 0
             num_series = len(sorted_series) + (1 if has_assets else 0)
             
@@ -2259,8 +2350,8 @@ def main():
                     x=0.01, y=0.95,
                     showarrow=False,
                     font=dict(color='#ff6b35', size=11, family='IBM Plex Mono'),
-                    bgcolor='rgba(0,0,0,0.6)',
-                    bordercolor='#2a2a2a',
+                    bgcolor='rgba(0,0,0,0.6)' if st.session_state.theme == 'dark' else 'rgba(255,255,255,0.8)',
+                    bordercolor=theme['border_color'],
                     borderwidth=1,
                     align='left'
                 )
@@ -2269,7 +2360,7 @@ def main():
                 for start, end in NBER_RECESSIONS:
                     fig.add_vrect(
                         x0=start, x1=end,
-                        fillcolor="#ffffff", opacity=0.07,
+                        fillcolor=theme['recession_color'], opacity=0.07,
                         layer="below", line_width=0,
                         row=1, col=1
                     )
@@ -2346,8 +2437,8 @@ def main():
                     x=0.01, y=0.95,
                     showarrow=False,
                     font=dict(color='#ff6b35', size=11, family='IBM Plex Mono'),
-                    bgcolor='rgba(0,0,0,0.6)',
-                    bordercolor='#2a2a2a',
+                    bgcolor='rgba(0,0,0,0.6)' if st.session_state.theme == 'dark' else 'rgba(255,255,255,0.8)',
+                    bordercolor=theme['border_color'],
                     borderwidth=1,
                     align='left'
                 )
@@ -2356,7 +2447,7 @@ def main():
                 for start, end in NBER_RECESSIONS:
                     fig.add_vrect(
                         x0=start, x1=end,
-                        fillcolor="#ffffff", opacity=0.07,
+                        fillcolor=theme['recession_color'], opacity=0.07,
                         layer="below", line_width=0,
                         row=row, col=1
                     )
@@ -2369,7 +2460,7 @@ def main():
                 spikemode='across', # Force the line across subplot gaps
                 spikesnap='cursor',
                 spikedash='solid',
-                spikecolor='rgba(255,255,255,0.8)', # Prominent white line
+                spikecolor=theme['recession_color'], # Dynamic spike color
                 spikethickness=1,
                 showticklabels=False
             )
@@ -2687,6 +2778,11 @@ def main():
                 st.session_state.lab_stress = hist_stress
                 st.session_state.lab_freq = rebalance_freq
                 st.session_state.lab_initial_capital = initial_capital
+                st.session_state.lab_strategy_type = strategy_type
+                st.session_state.lab_benchmark_weights = benchmark_weights
+                st.session_state.lab_max_weights = max_weights
+                st.session_state.lab_horizon_months = horizon_months
+                st.session_state.lab_full_params = full_params
                 # Initialize reset count if not present
                 if 'lab_reset_count' not in st.session_state:
                     st.session_state.lab_reset_count = 0
@@ -2696,18 +2792,24 @@ def main():
             benchmark_results = st.session_state.benchmark_results
             hist_stress = st.session_state.lab_stress
             lab_freq = st.session_state.get('lab_freq', 1)
-            initial_capital = st.session_state.lab_initial_capital # Retrieve initial capital
+            initial_capital = st.session_state.lab_initial_capital 
+            strategy_type = st.session_state.get('lab_strategy_type', strategy_type)
+            benchmark_weights = st.session_state.get('lab_benchmark_weights', {})
+            max_weights = st.session_state.get('lab_max_weights', {})
+            horizon_months = st.session_state.get('lab_horizon_months', 12)
+            full_params = st.session_state.get('lab_full_params', {})
 
             # --- SHARED UI THEME & LAYOUT ---
             theme = create_theme()
             layout_args = {
                 'height': 800,
                 'showlegend': True,
-                'legend': dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
+                'legend': dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10, color=theme['font']['color'])),
                 'margin': dict(l=50, r=50, t=60, b=50),
                 'hovermode': 'x unified',
                 'paper_bgcolor': theme['paper_bgcolor'],
-                'plot_bgcolor': theme['plot_bgcolor']
+                'plot_bgcolor': theme['plot_bgcolor'],
+                'font': theme['font']
             }
 
 
@@ -2832,10 +2934,10 @@ def main():
                     # Layout Updates
                     use_log = st.checkbox("Log Scale (NAV Chart)", key="lab_log_scale_drill")
                     fig_lab.update_layout(**layout_args)
-                    fig_lab.update_yaxes(title_text="Allocation", range=[0, 1], tickformat='.0%', row=1, col=1, gridcolor='#1a1a1a')
+                    fig_lab.update_yaxes(title_text="Allocation", range=[0, 1], tickformat='.0%', row=1, col=1, gridcolor=theme['gridcolor'], tickfont=dict(color=theme['label_color']), title_font=dict(color=theme['label_color']))
                     fig_lab.update_yaxes(range=[0, 1.2], showgrid=False, showticklabels=False, row=1, col=1, secondary_y=True)
-                    fig_lab.update_yaxes(title_text="NAV ($)", type="log" if use_log else "linear", row=2, col=1, gridcolor='#1a1a1a')
-                    fig_lab.update_yaxes(title_text="Drawdown", tickformat='.0%', row=3, col=1, gridcolor='#1a1a1a')
+                    fig_lab.update_yaxes(title_text="NAV ($)", type="log" if use_log else "linear", row=2, col=1, gridcolor=theme['gridcolor'], tickfont=dict(color=theme['label_color']), title_font=dict(color=theme['label_color']))
+                    fig_lab.update_yaxes(title_text="Drawdown", tickformat='.0%', row=3, col=1, gridcolor=theme['gridcolor'], tickfont=dict(color=theme['label_color']), title_font=dict(color=theme['label_color']))
                     fig_lab.update_xaxes(**theme['xaxis'], row=1, col=1)
                     fig_lab.update_xaxes(**theme['xaxis'], row=2, col=1)
                     fig_lab.update_xaxes(**theme['xaxis'], row=3, col=1)
@@ -2854,8 +2956,6 @@ def main():
                     for col in ['Sharpe', 'Sortino', 'Calmar']:
                         if col in metrics_comp.columns: metrics_comp[col] = metrics_comp[col].apply(lambda x: f"{x:.2f}")
                     if 'Turnover' in metrics_comp.columns: metrics_comp['Turnover'] = metrics_comp['Turnover'].apply(lambda x: f"{x:.2f}x")
-                    st.table(metrics_comp)
-
                     st.table(metrics_comp)
 
             # --- ROLLING ANALYSIS TAB CONTENT ---
@@ -2954,7 +3054,10 @@ def main():
                                 hovertemplate='%{y:.1%}<br>%{x|%b %Y}<extra>Benchmark</extra>'
                             ))
                             fig_roll_ret.update_layout(
-                                title=f"Rolling {holding_duration}Y Return (CAGR)",
+                                title=dict(
+                                    text=f"Rolling {holding_duration}Y Return (CAGR)",
+                                    font=dict(color=theme['font']['color'])
+                                ),
                                 **{k:v for k,v in layout_args.items() if k not in ['height', 'margin', 'hovermode']},
                                 height=400,
                                 margin=dict(l=50, r=20, t=50, b=20),
@@ -2962,7 +3065,7 @@ def main():
                                 dragmode='pan',
                                 clickmode='event+select'
                             )
-                            fig_roll_ret.update_yaxes(tickformat='.1%', gridcolor='#1a1a1a')
+                            fig_roll_ret.update_yaxes(tickformat='.1%', gridcolor=theme['gridcolor'], tickfont=dict(color=theme['label_color']), title_font=dict(color=theme['label_color']))
                             # Add vertical spikeline
                             fig_roll_ret.update_xaxes(
                                 **theme['xaxis'],
@@ -3027,7 +3130,10 @@ def main():
                                 hovertemplate='%{y:.1%}<br>%{x|%b %Y}<extra>Benchmark</extra>'
                             ))
                             fig_roll_vol.update_layout(
-                                title=f"Rolling {holding_duration}Y Volatility",
+                                title=dict(
+                                    text=f"Rolling {holding_duration}Y Volatility",
+                                    font=dict(color=theme['font']['color'])
+                                ),
                                 **{k:v for k,v in layout_args.items() if k not in ['height', 'margin', 'hovermode']},
                                 height=350,
                                 margin=dict(l=50, r=20, t=50, b=20),
@@ -3035,7 +3141,7 @@ def main():
                                 dragmode='pan',
                                 clickmode='event+select'
                             )
-                            fig_roll_vol.update_yaxes(tickformat='.1%', gridcolor='#1a1a1a')
+                            fig_roll_vol.update_yaxes(tickformat='.1%', gridcolor=theme['gridcolor'], tickfont=dict(color=theme['label_color']), title_font=dict(color=theme['label_color']))
                             fig_roll_vol.update_xaxes(
                                 **theme['xaxis'],
                                 showspikes=True,
@@ -3119,40 +3225,41 @@ def main():
     width: 100%;
     border-collapse: collapse;
     font-family: inherit;
-    background: #0e1117;
+    background: var(--bg-secondary);
     border-radius: 8px;
     overflow: visible;
-    color: #fafafa;
+    color: var(--text-primary);
     margin-top: 10px;
+    border: 1px solid var(--border-color);
 }
 .metrics-table th {
     text-align: left;
     padding: 12px 15px;
-    background: #1f2937;
+    background: var(--bg-tertiary);
     font-weight: 600;
     font-size: 0.9rem;
-    color: #94a3b8;
-    border-bottom: 2px solid #374151;
+    color: var(--text-secondary);
+    border-bottom: 2px solid var(--border-color);
 }
 .metrics-table td {
     padding: 10px 15px;
-    border-bottom: 1px solid #1f2937;
+    border-bottom: 1px solid var(--border-color);
     font-size: 0.85rem;
 }
 .metrics-table tr:hover td {
-    background: #1e293b;
+    background: var(--bg-tertiary);
 }
 .tooltip-container {
     position: relative;
     cursor: help;
-    border-bottom: 1px dotted #4da6ff;
-    color: #4da6ff;
+    border-bottom: 1px dotted var(--accent-blue);
+    color: var(--accent-blue);
 }
 .tooltip-container .tooltip-text {
     visibility: hidden;
     width: 200px;
-    background-color: #334155;
-    color: #fff;
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
     text-align: left;
     border-radius: 6px;
     padding: 8px 12px;
@@ -3166,14 +3273,15 @@ def main():
     font-weight: normal;
     line-height: 1.4;
     box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border-color);
     pointer-events: none;
 }
 .tooltip-container:hover .tooltip-text {
     visibility: visible;
     opacity: 1;
 }
-.val-strat { color: #ff6b35; font-weight: 600; }
-.val-bench { color: #94a3b8; }
+.val-strat { color: var(--accent-orange); font-weight: 600; }
+.val-bench { color: var(--text-secondary); }
 </style>
 """
                             
@@ -3210,16 +3318,106 @@ def main():
                                 
                                 n_per = len(common_roll_idx)
                                 st.markdown(f"""
-                                <div style="margin-top: 15px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); font-size: 0.85rem; color: #94a3b8;">
-                                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 8px;">
-                                        <span>📅 <b>Start Dates:</b> {start_dt} — {end_dt}</span>
-                                        <span>🏁 <b>Analysis End:</b> {analysis_end_dt}</span>
+                                <div style="margin-top: 15px; padding: 12px; border-radius: 8px; background: var(--bg-tertiary); border: 1px solid var(--border-color); font-size: 0.85rem; color: var(--text-secondary);">
+                                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">
+                                        <span>📅 <b style="color:var(--text-primary);">Start Dates:</b> {start_dt} — {end_dt}</span>
+                                        <span>🏁 <b style="color:var(--text-primary);">Analysis End:</b> {analysis_end_dt}</span>
                                     </div>
-                                    <div style="text-align: center; color: #4da6ff; font-weight: 600;">
+                                    <div style="text-align: center; color: var(--accent-blue); font-weight: 600;">
                                         📊 Rolling Periods: {n_per}
                                     </div>
                                 </div>
                                 """, unsafe_allow_html=True)
+
+                        # --- STRATEGY & BENCHMARK DETAIL CONTAINER ---
+                        st.divider()
+                        
+                        # Prepare data for the summary
+                        all_drivers = []
+                        for asset_type in ['EQUITY', 'BONDS', 'GOLD']:
+                            drivers = stability_results_map[asset_type]['stable_features']
+                            all_drivers.extend(drivers)
+                        unique_drivers = sorted(list(set(all_drivers)))
+                        drivers_str = ", ".join(unique_drivers)
+
+                        strat_desc_map = {
+                            "Max Return": "Tactical momentum approach identifying top performing assets based on predicted returns.",
+                            "Min Volatility": "Global Minimum Variance (GMV) optimization focusing on risk and co-movement.",
+                            "Min Drawdown": "Regime-aware defense switching based on Macro Stress Score (Aggregate Z-Score).",
+                            "Min Loss": "Safety-first approach using Lower 95% Confidence Intervals for high-conviction signals."
+                        }
+                        
+                        model_info = {
+                            'EQUITY': 'Random Forest Regressor (Non-Linear Ensemble)',
+                            'BONDS': 'ElasticNetCV (L1/L2 Regularized Linear)',
+                            'GOLD': 'Simple OLS (Ordinary Least Squares)'
+                        }
+
+                        # Render Strategy & Benchmark Detail Summary
+                        analysis_summary_html = f"""<div style="padding: 24px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; margin-top: 30px; font-family: 'Inter', sans-serif;">
+<h2 style="margin-top: 0; color: var(--accent-blue); font-size: 1.25rem; border-bottom: 2px solid var(--border-color); padding-bottom: 12px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">📋 <span style="letter-spacing: 0.5px;">SYSTEM ARCHITECTURE & METHODOLOGY</span></h2>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+<div style="display: flex; flex-direction: column; gap: 20px;">
+<div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 4px solid var(--accent-orange);">
+<h3 style="font-size: 0.95rem; color: var(--text-primary); margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px;">🚀 Strategy Optimization: {strategy_type}</h3>
+<p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
+The optimization core utilizes the <b>{strategy_type}</b> engine. {strat_desc_map.get(strategy_type, "")} 
+Dynamic allocation is enforced through a <b>constrained optimization</b> framework ensuring weights sum to 100% (Cash inclusive) 
+while respecting asset-level bounds (e.g., Equity cap at {max_weights['EQUITY']:.0%}).
+</p>
+</div>
+<div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 4px solid var(--accent-blue);">
+<h3 style="font-size: 0.95rem; color: var(--text-primary); margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px;">🧬 Heterogeneous Model Architectures</h3>
+<div style="display: flex; flex-direction: column; gap: 8px;">
+<div style="font-size: 0.8rem; color: var(--text-secondary);">
+<b style="color: var(--text-primary);">Equity Core:</b> {model_info['EQUITY']}. Capable of mapping non-linear state interactions across the 126-variable feature space.
+</div>
+<div style="font-size: 0.8rem; color: var(--text-secondary);">
+<b style="color: var(--text-primary);">Fixed Income:</b> {model_info['BONDS']}. Employs L1/L2 regularization via Coordinate Descent for optimal persistence in sparse macro environments.
+</div>
+<div style="font-size: 0.8rem; color: var(--text-secondary);">
+<b style="color: var(--text-primary);">Commodities (Gold):</b> {model_info['GOLD']}. Leverages cointegration-ready parsimony for long-horizon stability.
+</div>
+</div>
+</div>
+<div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 4px solid #10b981;">
+<h3 style="font-size: 0.95rem; color: var(--text-primary); margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px;">📡 Feature Engineering & Signal Processing</h3>
+<p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
+Raw macro data undergoes <b>Stationarity Transformations</b> (level to Δlog) based on FRED-MD specifications. Features are سپس normalized via an <b>Expanding-Window Z-Score</b> pipeline to prevent look-ahead bias. Robustness is ensured through <b>Z-Score Winsorization</b> at a 3.0σ threshold, mitigating the impact of exogenous shocks (e.g., GFC, 2020).
+</p>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 20px;">
+<div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
+<h3 style="font-size: 0.95rem; color: var(--text-primary); margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px;">⚖️ Parameters & Operational Constraints</h3>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 0.82rem; color: var(--text-secondary);">
+<div><b style="color: var(--text-primary);">Rebal. Frequency:</b> {lab_freq} Month(s)</div>
+<div><b style="color: var(--text-primary);">Trading Friction:</b> {full_params.get('trading_cost_bps', 0)} bps</div>
+<div><b style="color: var(--text-primary);">Horizon:</b> {horizon_months}M Forward Return</div>
+<div><b style="color: var(--text-primary);">Simulation Span:</b> {len(lab_results['equity_curve'])} Months</div>
+<div style="grid-column: span 2; padding-top: 5px; border-top: 1px solid var(--border-color);">
+<b style="color: var(--text-primary);">Active Macro Drivers:</b> <code style="font-size: 0.75rem; background: rgba(0,0,0,0.2); color: var(--accent-blue); padding: 2px 4px;">{drivers_str[:120]}...</code>
+</div>
+</div>
+</div>
+<div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 4px solid #f43f5e;">
+<h3 style="font-size: 0.95rem; color: var(--text-primary); margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px;">📊 Benchmark: Buy & Hold Configuration</h3>
+<div style="display: flex; justify-content: space-around; background: rgba(0,0,0,0.2); padding: 12px; border-radius: 6px; text-align: center;">
+<div><div style="font-size: 0.75rem; color: var(--text-secondary);">EQUITY (SPY)</div><div style="font-size: 1.1rem; font-weight: 700; color: #ff6b35;">{benchmark_weights['EQUITY']:.0%}</div></div>
+<div><div style="font-size: 0.75rem; color: var(--text-secondary);">FIXED INC. (AGG)</div><div style="font-size: 1.1rem; font-weight: 700; color: #4da6ff;">{benchmark_weights['BONDS']:.0%}</div></div>
+<div><div style="font-size: 0.75rem; color: var(--text-secondary);">GOLD (GLD)</div><div style="font-size: 1.1rem; font-weight: 700; color: #ffd700;">{benchmark_weights['GOLD']:.0%}</div></div>
+</div>
+</div>
+<div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 4px solid #eab308;">
+<h3 style="font-size: 0.95rem; color: var(--text-primary); margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px;">🛡️ Backtest Protocol (Walk-Forward)</h3>
+<p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
+Validation employs a <b>Recursive Out-of-Sample (OOS) Walk-Forward</b> methodology. Each period's prediction is generated from a model trained solely on historical data up to that point (Expanding Window), maintaining a minimum <b>240-month training anchor</b> to ensure convergence of state coefficients. Execution assumes an initial capital of <b>${initial_capital:,.0f}</b>.
+</p>
+</div>
+</div>
+</div>
+</div>"""
+                        st.markdown(analysis_summary_html, unsafe_allow_html=True)
 
         else:
             st.info("💡 Select a strategy and click the button above to start the out-of-sample simulation. The process may take up to 60 seconds on the first run.")
