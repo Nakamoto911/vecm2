@@ -363,7 +363,9 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
                               min_train_months: int = 240, 
                               horizon_months: int = 12,
                               rebalance_freq: int = 12,
-                              asset_class: str = 'EQUITY') -> tuple:
+                              asset_class: str = 'EQUITY',
+                              selection_threshold: float = 0.6,
+                              l1_ratio: float = 0.5) -> tuple:
     """
     Recursive walk-forward (expanding window) backtest.
     Returns: (oos_results_df, selection_history_df)
@@ -396,63 +398,65 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         # Determine prediction window
         end_window = min(i + rebalance_freq, len(dates))
         predict_idx = dates[i : end_window]
+        
+        # -----------------------------------------------------------
+        # 1. Point-in-Time Feature Selection
+        # -----------------------------------------------------------
+        # Use only training data available at this time step
+        stable_feats, _ = select_features_elastic_net(
+            y_train_all, X_train, 
+            threshold=selection_threshold, 
+            l1_ratio=l1_ratio,
+            n_iterations=30 # Reduced for performance during backtest
+        )
+        
+        # Fallback if no features selected
+        if not stable_feats:
+            stable_feats = X_train.columns.tolist()
             
+        # -----------------------------------------------------------
+        # 2. Filter & Winsorize
+        # -----------------------------------------------------------
+        X_train_sel = X_train[stable_feats]
+        # Ensure we only select columns that exist in live data (should be all)
+        X_live_sel = X.loc[predict_idx][stable_feats]
+
+        win = Winsorizer(threshold=3.0)
+        X_train_clean = win.fit_transform(X_train_sel)
+        X_live_clean = win.transform(X_live_sel)
+        
+        # Record Selection (Binary 1/0 for heatmap)
+        current_selection = pd.Series(0, index=X.columns)
+        current_selection[stable_feats] = 1
+        selection_history.append({**current_selection.to_dict(), 'date': current_date})
+
+        # -----------------------------------------------------------
+        # 3. Model Estimation & Prediction
+        # -----------------------------------------------------------
         if asset_class == 'EQUITY':
-            # EQUITY: Random Forest on ALL features (mirrors benchmark)
-            # Benchmark start_idx=240, step=12, horizon=12
-            win = Winsorizer(threshold=3.0)
-            X_train_clean = win.fit_transform(X_train)
-            X_live_clean = win.transform(X.loc[predict_idx])
-            
             model = RandomForestRegressor(n_estimators=100, max_depth=3, random_state=42)
             model.fit(X_train_clean, y_train_all)
-            
-            # Record selection (in RF, we can use importance as proxy)
-            importance = pd.Series(model.feature_importances_, index=X.columns)
-            selection_history.append({**importance.to_dict(), 'date': current_date})
-            
             raw_preds = model.predict(X_live_clean)
-            pred_vals = pd.Series(np.clip(raw_preds, -0.30, 0.30), index=predict_idx)
-            se = np.std(y_train_all - model.predict(X_train_clean))
-            n_features = X_train_clean.shape[1]
-
-        elif asset_class == 'BONDS':
-            # BONDS: ElasticNetCV on ALL features (mirrors benchmark)
-            win = Winsorizer(threshold=3.0)
-            X_train_clean = win.fit_transform(X_train)
-            X_live_clean = win.transform(X.loc[predict_idx])
             
+        elif asset_class == 'BONDS':
+            # Use fixed alphas or simple CV to save time, or full CV if acceptable
             model = ElasticNetCV(l1_ratio=[.1, .5, .7, .9, .95, .99, 1], cv=5, max_iter=5000)
             model.fit(X_train_clean, y_train_all)
-            
-            # Record selection
-            coefs = pd.Series(model.coef_, index=X.columns)
-            selection_history.append({**coefs.to_dict(), 'date': current_date})
-            
             raw_preds = model.predict(X_live_clean)
-            pred_vals = pd.Series(np.clip(raw_preds, -0.30, 0.30), index=predict_idx)
-            se = np.std(y_train_all - model.predict(X_train_clean))
-            n_features = X_train_clean.shape[1]
-
-        else: # GOLD
-            # GOLD: Simple OLS on ALL features (mirrors benchmark)
-            win = Winsorizer(threshold=3.0)
-            X_train_clean = win.fit_transform(X_train)
-            X_live_clean = win.transform(X.loc[predict_idx])
             
+        else: # GOLD
             model = LinearRegression()
             model.fit(X_train_clean, y_train_all)
-            
-            # Record selection
-            coefs = pd.Series(model.coef_, index=X.columns)
-            selection_history.append({**coefs.to_dict(), 'date': current_date})
-            
             raw_preds = model.predict(X_live_clean)
-            pred_vals = pd.Series(np.clip(raw_preds, -0.30, 0.30), index=predict_idx)
-            se = np.std(y_train_all - model.predict(X_train_clean))
-            n_features = X_train_clean.shape[1]
+
+        # Clip predictions to realistic bounds
+        pred_vals = pd.Series(np.clip(raw_preds, -0.30, 0.30), index=predict_idx)
         
-        t_crit = t.ppf(0.95, df=len(y_train_all)-n_features-1) if n_features > 0 else 1.66
+        # Estimate Forecast Error (SE) using In-Sample Residuals
+        se = np.std(y_train_all - model.predict(X_train_clean))
+        n_features_used = X_train_clean.shape[1]
+        
+        t_crit = t.ppf(0.95, df=len(y_train_all)-n_features_used-1) if n_features_used > 0 else 1.66
         
         for date in predict_idx:
             val = pred_vals.loc[date]
@@ -1439,7 +1443,16 @@ def plot_variable_survival(stability_results_map: dict, asset: str, descriptions
         return go.Figure().update_layout(title="No stability data available", **theme)
     
     # Extract coefficients history
-    coef_df = stability_results_map[asset].get('all_coefficients', pd.DataFrame())
+    # For Tab 5 Heatmap, we now prefer the PIT selection history.
+    # However, this function is generic. We need to check what is passed.
+    
+    # If using the new backtest_selection_map, it's a DataFrame directly.
+    # If using stability_results_map, it's inside 'all_coefficients'.
+    
+    if isinstance(stability_results_map.get(asset), pd.DataFrame):
+       coef_df = stability_results_map[asset]
+    else:
+       coef_df = stability_results_map[asset].get('all_coefficients', pd.DataFrame())
     
     if coef_df.empty:
         return go.Figure().update_layout(title="No selection history available", **theme)
@@ -1498,11 +1511,11 @@ def plot_variable_survival(stability_results_map: dict, asset: str, descriptions
     return fig
 
 
-@st.cache_data(show_spinner="Synchronizing Macro Models...")
-def run_collective_analysis(y, X, l1_ratio, min_persistence, estimation_window_years, horizon_months):
+@st.cache_data(show_spinner="Synchronizing Live Macro Models...")
+def get_live_model_signals(y, X, l1_ratio, min_persistence, estimation_window_years, horizon_months):
     """
-    Runs the full analysis for all assets in one go and caches the results.
-    This prevents mid-rerun layout shifts that can reset st.tabs.
+    Computes the CURRENT 'Live' mode signals based on full history.
+    Used for Tabs 1 (Allocation), 2 (Stable Drivers), and 3 (Series).
     """
     expected_returns = {}
     confidence_intervals = {}
@@ -1513,11 +1526,11 @@ def run_collective_analysis(y, X, l1_ratio, min_persistence, estimation_window_y
     for asset in ['EQUITY', 'BONDS', 'GOLD']:
         y_asset = y[asset]
         
-        # Stability Analysis (Rolling Windows)
+        # Stability Analysis (Rolling Windows) - STILL USED for "Link" metric in Tab 2/Allocation
         stab_results = stability_analysis(y_asset, X, horizon_months=horizon_months, window_years=estimation_window_years)
         metrics = compute_stability_metrics(stab_results, X.columns)
         
-        # Stability Selection (Full Sample Bootstrapping)
+        # Stability Selection (Full Sample Bootstrapping) - Defines "Today's Drivers"
         stable_features, selection_probs = select_features_elastic_net(
             y_asset.dropna(), 
             X.loc[y_asset.dropna().index],
@@ -1534,7 +1547,7 @@ def run_collective_analysis(y, X, l1_ratio, min_persistence, estimation_window_y
             X_valid = X_valid[stable_features]
             X_current = X.tail(1)[stable_features]
         else:
-            # Fallback to all if somehow empty (though selection logic avoids this)
+            # Fallback to all if somehow empty
             X_current = X.tail(1)
 
         win = Winsorizer(threshold=3.0)
@@ -1603,11 +1616,38 @@ def run_collective_analysis(y, X, l1_ratio, min_persistence, estimation_window_y
             'metrics': metrics,
             'stable_features': stable_features,
             'hac_results': hac_results,
+            # We still keep 'all_coefficients' derived from Rolling Stability for Tab 2 context if needed,
+            # but Tab 5 will no longer use this.
             'all_coefficients': pd.DataFrame([res['coefficients'] for res in stab_results])
         }
         model_stats[asset] = hac_results
 
     return expected_returns, confidence_intervals, driver_attributions, stability_results_map, model_stats
+
+
+@st.cache_data(show_spinner="Running Walk-Forward Simulator (This may take a minute)...")
+def get_historical_backtest(y, X, min_train_months, horizon_months, rebalance_freq, selection_threshold, l1_ratio):
+    """
+    Wrapper for the PIT Backtester to run it for all assets and cache the result.
+    This drives Tabs 4 (Prediction), 5 (Diagnostics), and 6 (Backtest).
+    """
+    results = {}
+    heatmaps = {}
+    
+    for asset in ['EQUITY', 'BONDS', 'GOLD']:
+        oos_df, sel_df = run_walk_forward_backtest(
+            y[asset], X, 
+            min_train_months=min_train_months, 
+            horizon_months=horizon_months, 
+            rebalance_freq=rebalance_freq, 
+            asset_class=asset,
+            selection_threshold=selection_threshold,
+            l1_ratio=l1_ratio
+        )
+        results[asset] = oos_df
+        heatmaps[asset] = sel_df
+        
+    return results, heatmaps
 
 
 def plot_backtest(actual_returns: pd.Series, 
@@ -2103,9 +2143,21 @@ def main():
     X = macro_features.loc[valid_idx]
     y = y_forward.loc[valid_idx]
     
-    # 2. Main Analysis Loop (Synchronized & Cached)
-    expected_returns, confidence_intervals, driver_attributions, stability_results_map, model_stats = run_collective_analysis(
+    # 2. Main Analysis Loop
+    # A. Live Model (for current Allocation & Narrative) - Uses Full History
+    expected_returns, confidence_intervals, driver_attributions, stability_results_map, model_stats = get_live_model_signals(
         y, X, l1_ratio, min_persistence, estimation_window_years, horizon_months
+    )
+    
+    # B. Historic Backtest (Unbiased PIT Simulator) - Uses Walk-Forward Selection
+    # Note: rebalance_freq hardcoded to 12 (Annual) for standard backtest, or could be a param
+    backtest_results, backtest_selection = get_historical_backtest(
+        y, X, 
+        min_train_months=240, 
+        horizon_months=horizon_months, 
+        rebalance_freq=12,
+        selection_threshold=min_persistence,
+        l1_ratio=l1_ratio
     )
             
     # 3. Regime and Allocation
@@ -2495,17 +2547,11 @@ def main():
         }
         st.info(f"Target Architecture: **{model_display_names.get(asset_to_plot)}** | Training Window: **240 Months**")
         
-        # Run Walk-Forward Backtest (Lazy Load)
-        if st.button(f"🔍 RUN BACKTEST FOR {asset_to_plot}", width='stretch'):
-            with st.spinner(f"Running Walk-Forward Backtest for {asset_to_plot}..."):
-                oos_results, selection_history = cached_walk_forward(
-                    y[asset_to_plot], 
-                    X, 
-                    min_train_months=240, 
-                    horizon_months=horizon_months, 
-                    rebalance_freq=12,
-                    asset_class=asset_to_plot
-                )
+        # Run Walk-Forward Backtest (Pre-calculated)
+        if st.button(f"🔍 VIEW BACKTEST FOR {asset_to_plot}", width='stretch'):
+            # Use pre-calculated unbiased results
+            oos_results = backtest_results.get(asset_to_plot, pd.DataFrame())
+            selection_history = backtest_selection.get(asset_to_plot, pd.DataFrame())
             
             if not oos_results.empty:
                 # Align actual returns with OOS predictions
@@ -2561,16 +2607,8 @@ def main():
         
         for asset in ['EQUITY', 'BONDS', 'GOLD']:
             with st.expander(f"Diagnostics for {asset}", expanded=(asset == 'EQUITY')):
-                if st.button(f"📊 LOAD {asset} DIAGNOSTICS", key=f"btn_diag_{asset}"):
-                    with st.spinner(f"Loading diagnostics for {asset}..."):
-                        _, selection_df = cached_walk_forward(
-                            y[asset], 
-                            X, 
-                            min_train_months=240, 
-                            horizon_months=horizon_months, 
-                            rebalance_freq=12,
-                            asset_class=asset
-                        )
+                if st.button(f"📊 VIEW {asset} DIAGNOSTICS", key=f"btn_diag_{asset}"):
+                    selection_df = backtest_selection.get(asset, pd.DataFrame())
                         
                     if not selection_df.empty:
                         st.markdown("### Feature Selection Persistence")
@@ -2756,7 +2794,10 @@ def main():
 
             with st.spinner("Initializing strategy engine..."):
                 # Prepare inputs
-                preds_df, lower_ci_df = get_aggregated_predictions(y, X, horizon_months=horizon_months)
+                # Prepare inputs from Unbiased Simulator Results
+                # preds_df, lower_ci_df = get_aggregated_predictions(y, X, horizon_months=horizon_months)
+                preds_df = pd.DataFrame({k: v['predicted_return'] for k, v in backtest_results.items()}).dropna()
+                lower_ci_df = pd.DataFrame({k: v['lower_ci'] for k, v in backtest_results.items()}).dropna()
                 hist_stress = get_historical_stress(macro_data)
                 
                 # Filter by selected date range
