@@ -9,11 +9,7 @@ from scipy.stats import spearmanr
 from sklearn.preprocessing import StandardScaler
 import warnings
 
-# Import real data loaders from opus.py
-try:
-    from opus import load_fred_md_data, load_asset_data, prepare_macro_features, compute_forward_returns
-except ImportError:
-    print("Warning: Could not import from opus.py. Ensure it is in the same directory.")
+from opus import load_fred_md_data, load_asset_data, prepare_macro_features, compute_forward_returns
 
 # Suppress convergence warnings for cleaner output during benchmark
 warnings.filterwarnings("ignore")
@@ -55,6 +51,12 @@ def select_features_elastic_net(y: pd.Series, X: pd.DataFrame,
     """
     from sklearn.linear_model import ElasticNet
     
+    # Pre-clean: Drop columns that are all NaN or have any NaN in the provided sample
+    X = X.dropna(axis=1)
+    
+    if X.empty:
+        return [], pd.Series(dtype=float)
+
     # Standardize
     scaler = StandardScaler()
     X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=X.columns, index=X.index)
@@ -197,7 +199,7 @@ def run_benchmarking_engine(X, y, start_idx, step=12, horizon=12, regime_idx=0):
         if not stable_feats:
             stable_feats = train_X_purged.columns.tolist()
             
-        train_X_sel = train_X_purged[stable_feats]
+        train_X_sel = train_X_purged[stable_feats].dropna(axis=1) # Second pass drop just in case
         test_X_sel = test_X_raw[stable_feats]
         
         # 4. Apply Winsorization (Fit on purged training)

@@ -24,6 +24,8 @@ import pandas_datareader.data as web
 import warnings
 warnings.filterwarnings('ignore')
 from backtester import StrategyBacktester
+from opus import load_fred_md_data, load_asset_data, prepare_macro_features, compute_forward_returns
+import os
 
 # NBER Recession Dates (approximate for FRED-MD plotting)
 NBER_RECESSIONS = [
@@ -57,50 +59,7 @@ TRANSFORMATION_LABELS = {
 # DATA PIPELINE
 # ============================================================================
 
-def compute_forward_returns(prices: pd.DataFrame, horizon_months: int = 12) -> pd.DataFrame:
-    """
-    Compute annualized forward returns for each asset.
-    """
-    log_prices = np.log(prices)
-    forward_log_return = log_prices.shift(-horizon_months) - log_prices
-    annualized_return = forward_log_return / (horizon_months / 12)
-    return annualized_return
-
-
-def prepare_macro_features(macro_data: pd.DataFrame) -> pd.DataFrame:
-    """
-    Transform macro variables into current-state features.
-    No forward-looking information used.
-    """
-    features = pd.DataFrame(index=macro_data.index)
-    
-    for col in macro_data.columns:
-        series = macro_data[col]
-        
-        # Level
-        features[f'{col}_level'] = series
-        
-        # Moving averages
-        features[f'{col}_MA12'] = series.rolling(12).mean()
-        features[f'{col}_MA60'] = series.rolling(60).mean()
-        
-        # Z-score vs 5Y average
-        ma60 = series.rolling(60).mean()
-        std60 = series.rolling(60).std()
-        features[f'{col}_zscore'] = (series - ma60) / std60
-        
-        # Percentile rank (rolling 10Y window)
-        features[f'{col}_pctl'] = series.rolling(120).apply(
-            lambda x: (x < x.iloc[-1]).sum() / len(x), raw=False
-        )
-        
-        # Momentum / slope
-        ma12 = series.rolling(12).mean()
-        std = series.rolling(60).std()
-        features[f'{col}_slope12'] = (ma12 - ma12.shift(12)) / std
-        features[f'{col}_slope60'] = (ma60 - ma60.shift(60)) / std
-    
-    return features.dropna()
+# Redundant functions now imported from opus.py
 
 
 # ============================================================================
@@ -122,113 +81,7 @@ def get_series_descriptions(file_path: str = 'FRED-MD_updated_appendix.csv') -> 
         return {}
 
 
-@st.cache_data(ttl=3600)
-def load_fred_md_data(file_path: str = '2025-11-MD.csv') -> pd.DataFrame:
-    """Load and process FRED-MD data for specified macro variables."""
-    try:
-        df_raw = pd.read_csv(file_path)
-        df = df_raw.iloc[1:].copy()
-        df['sasdate'] = pd.to_datetime(df['sasdate'], utc=True).dt.tz_localize(None)
-        df = df.set_index('sasdate')
-        
-        for col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-        # Core Macro Variables from Spec
-        mapping = {
-            'PAYEMS': 'PAYEMS',     # Labor
-            'UNRATE': 'UNRATE',     # Labor
-            'INDPRO': 'INDPRO',     # Output
-            'CUMFNS': 'CAPACITY',   # Output
-            'CPIAUCSL': 'CPI',      # Prices
-            'WPSFD49207': 'PPI',    # Prices
-            'PCEPI': 'PCE',         # Prices
-            'FEDFUNDS': 'FEDFUNDS', # Rates
-            'GS10': 'GS10',         # Rates
-            'HOUST': 'HOUST',       # Housing
-            'M2SL': 'M2'            # Money
-        }
-        
-        data = pd.DataFrame(index=df.index)
-        for fred_col, target_col in mapping.items():
-            if fred_col in df.columns:
-                data[target_col] = df[fred_col]
-        
-        # Derived Financial Variables
-        if 'GS10' in data.columns and 'FEDFUNDS' in data.columns:
-            data['SPREAD'] = data['GS10'] - data['FEDFUNDS']
-        
-        if 'BAA' in df.columns and 'AAA' in df.columns:
-            data['BAA_AAA'] = df['BAA'] - df['AAA']
-            
-        # Apply log transformations where appropriate (Spec says keep core variables, 
-        # but apply transformations in prepare_macro_features. 
-        # However, level variables like INDPRO/CPI/etc usually need log-level or log-diff.
-        # Spec says {VAR}_level = X_t. I'll stick to logs for index-like variables as per previous logic
-        # but the spec doesn't explicitly say log. I'll log transform them here to keep consistency
-        # with standard macro modelling when using levels of prices/indices.)
-        log_vars = ['PAYEMS', 'INDPRO', 'CPI', 'PPI', 'PCE', 'HOUST', 'M2']
-        for col in log_vars:
-            if col in data.columns:
-                data[col] = np.log(data[col].replace(0, np.nan))
-        
-        data = data.replace([np.inf, -np.inf], np.nan).dropna()
-        return data
-        
-    except Exception as e:
-        st.error(f"Error loading FRED-MD data: {e}")
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=3600)
-def load_asset_data(start_date: str = '1960-01-01') -> pd.DataFrame:
-    """Load long history asset prices."""
-    
-    # EQUITIES from FRED-MD (S&P 500)
-    equity_prices = pd.Series(dtype=float)
-    try:
-        df_macro_raw = pd.read_csv('2025-11-MD.csv').iloc[1:]
-        df_macro_raw['sasdate'] = pd.to_datetime(df_macro_raw['sasdate'], utc=True).dt.tz_localize(None)
-        df_macro_raw.set_index('sasdate', inplace=True)
-        
-        if 'S&P 500' in df_macro_raw.columns:
-            equity_prices = pd.to_numeric(df_macro_raw['S&P 500'], errors='coerce').dropna()
-    except Exception as e:
-        st.warning(f"Equity data error: {e}")
-
-    # GOLD - using PPI for Gold (WPU1022) as long-term proxy
-    gold_prices = pd.Series(dtype=float)
-    try:
-        gold_ppi = web.DataReader('WPU1022', 'fred', start_date)
-        gold_ppi.index = pd.to_datetime(gold_ppi.index, utc=True).tz_localize(None)
-        gold_ppi = gold_ppi.resample('MS').last()
-        gold_prices = gold_ppi['WPU1022'].dropna()
-    except Exception as e:
-        st.warning(f"Gold data error: {e}")
-
-    # BONDS - synthetic total return from GS10
-    bond_prices = pd.Series(dtype=float)
-    try:
-        gs10 = web.DataReader('GS10', 'fred', start_date)
-        gs10.index = pd.to_datetime(gs10.index, utc=True).tz_localize(None)
-        yields = gs10['GS10'] / 100
-        duration = 7.5
-        # Calculate monthly total returns
-        carry = yields.shift(1) / 12
-        price_change = -duration * (yields - yields.shift(1))
-        synth_ret = carry + price_change
-        # Convert returns to index
-        bond_prices = 100 * (1 + synth_ret.fillna(0)).cumprod()
-    except Exception as e:
-        st.warning(f"Bond data error: {e}")
-
-    df_prices = pd.DataFrame({
-        'EQUITY': equity_prices,
-        'GOLD': gold_prices,
-        'BONDS': bond_prices
-    }).dropna()
-    
-    return df_prices
+# Redundant functions now imported from opus.py
 
 
 # ============================================================================
@@ -323,6 +176,12 @@ def select_features_elastic_net(y: pd.Series, X: pd.DataFrame,
     """
     from sklearn.linear_model import ElasticNet
     
+    # Pre-clean: Drop columns that are all NaN or have any NaN in the provided sample
+    X = X.dropna(axis=1)
+    
+    if X.empty:
+        return [], pd.Series(dtype=float)
+
     # Standardize
     scaler = StandardScaler()
     X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=X.columns, index=X.index)
@@ -391,7 +250,8 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         
         X_train_all = X[train_mask]
         y_train_all = y[train_mask].dropna()
-        X_train = X_train_all.loc[y_train_all.index]
+        # Drop columns in training set that contain any NaNs (schema evolution)
+        X_train = X_train_all.loc[y_train_all.index].dropna(axis=1)
         
         if len(y_train_all) < 60:
             continue
@@ -2142,20 +2002,24 @@ def main():
     """, unsafe_allow_html=True)
     
     # Load data
-    macro_data = load_fred_md_data()
     asset_prices = load_asset_data()
     descriptions = get_series_descriptions()
     
-    if macro_data.empty or asset_prices.empty:
-        st.error("Failed to load required data.")
-        return
-    
-    common_idx = macro_data.index.intersection(asset_prices.index)
-    macro_data = macro_data.loc[common_idx]
-    asset_prices = asset_prices.loc[common_idx]
-    
-    # 1. Feature Preparation
-    macro_features = prepare_macro_features(macro_data)
+    # Check for Point-in-Time (PIT) Matrix
+    PIT_FILE = 'PIT_Macro_Features.csv'
+    if os.path.exists(PIT_FILE):
+        st.success(f"⚡ Loading Diagonalized Point-in-Time (PIT) Matrix: `{PIT_FILE}`")
+        macro_features = pd.read_csv(PIT_FILE, index_col=0, parse_dates=True)
+        # We still need raw macro data for some metrics (Regime, Stress Score)
+        # and for the 'Series' tab.
+        macro_data = load_fred_md_data() 
+    else:
+        st.warning("⚠️ PIT Matrix not found. Generating features from default vintage (potential Revision Bias).")
+        macro_data = load_fred_md_data()
+        if macro_data.empty or asset_prices.empty:
+            st.error("Failed to load required data.")
+            return
+        macro_features = prepare_macro_features(macro_data)
     y_forward = compute_forward_returns(asset_prices, horizon_months=horizon_months)
     
     # Align again because of lags and forward shifts

@@ -9,3 +9,4 @@ pandas-datareader>=0.10.0
 setuptools
 scikit-learn
 statsmodels
+beautifulsoup4>=4.12.0
