@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from bs4 import BeautifulSoup
 from datetime import datetime
+from pandas.tseries.offsets import DateOffset
 from data_utils import prepare_macro_features
 
 # Configuration
@@ -115,12 +116,13 @@ def build_pit_matrix():
         existing_pit = pd.read_csv(OUTPUT_FILE, index_col=0, parse_dates=True)
         print(f"  Found existing PIT matrix with {len(existing_pit)} rows.")
         
-        # Check if we need base history (data before the first vintage timestamp)
+        # Check if we need base history (data before the first vintage availability)
         date_match = re.search(r'(\d{4})[-m](\d{2})', vintage_files[0])
-        first_v_date = pd.to_datetime(f"{date_match.group(1)}-{date_match.group(2)}-01")
+        first_v_month = pd.to_datetime(f"{date_match.group(1)}-{date_match.group(2)}-01")
+        first_availability_date = first_v_month + DateOffset(months=1)
         
-        if not existing_pit.empty and existing_pit.index.min() >= first_v_date:
-            print(f"  Base history (pre-{first_v_date.date()}) missing. Forcing rebuild to seed history.")
+        if not existing_pit.empty and existing_pit.index.min() >= first_availability_date:
+            print(f"  Base history (pre-{first_availability_date.date()}) missing. Forcing rebuild to seed history.")
             existing_pit = pd.DataFrame()
             existing_vintages = set()
         else:
@@ -137,7 +139,12 @@ def build_pit_matrix():
         if not date_match:
             continue
         v_date_str = f"{date_match.group(1)}-{date_match.group(2)}"
-        v_date = pd.to_datetime(v_date_str + '-01')
+        # Parse official vintage release month
+        v_release_month = pd.to_datetime(v_date_str + '-01')
+        
+        # Apply Conservative Lag:
+        # A vintage released "sometime in month T" is strictly safe for T+1 onwards.
+        v_availability_date = v_release_month + DateOffset(months=1)
         
         # Skip if already in PIT matrix
         if v_date_str in existing_vintages:
@@ -194,21 +201,21 @@ def build_pit_matrix():
                 continue
             
             # BASE HISTORY SEEDING: If this is the oldest vintage and we have no existing matrix,
-            # take ALL historical rows before this vintage date.
+            # take ALL historical rows before this vintage's availability date.
             if idx == 0 and existing_pit.empty:
-                base_history = features[features.index < v_date].copy()
+                base_history = features[features.index < v_availability_date].copy()
                 if not base_history.empty:
                     pit_rows.append(base_history)
-                    print(f"  Seed: Populated Base History with {len(base_history)} rows (pre-{v_date.date()})")
+                    print(f"  Seed: Populated Base History with {len(base_history)} rows (pre-{v_availability_date.date()})")
 
             # EXTRACTION: The Nowcast (Last valid row)
             nowcast = features.iloc[-1:].copy()
             
-            # Assign Vintage Date as the index
-            nowcast.index = [v_date]
+            # Assign Availability Date as the index (Trading Availability)
+            nowcast.index = [v_availability_date]
             
             pit_rows.append(nowcast)
-            print(f"  Processed {v_file} -> {len(features)} rows, Nowcast at {v_date.date()}")
+            print(f"  Processed {v_file} -> {len(features)} rows, Available at {v_availability_date.date()}")
             
         except Exception as e:
             print(f"  Error processing {v_file}: {e}")

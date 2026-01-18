@@ -146,9 +146,15 @@ The historical vintage matrix is built via a "Diagonalization" process implement
 1.  **Sourcing:** The system scrapes historical monthly CSV vintages (dating back to the 1960s) from the St. Louis Fed research database.
 2.  **Nowcast Extraction:** For every month $v$ in history, the builder loads the specific vintage file released during that month. It extracts the **last valid row** (the "Nowcast") from that snapshot.
 3.  **Feature Harmonization:** Each extracted nowcast is passed through the standard transformation pipeline (Section 3).
-4.  **Diagonal Assembly:** These individual nowcasts are stitched together by their **Vintage Date** (release date), creating a master matrix where each row $t$ contains the exact information set available at that time $t$.
+4.  **Diagonal Assembly:** These individual nowcasts are stitched together by their **Trading Availability Date**. Following the **Conservative Lag Protocol**, a row $t$ contains the information set from the vintage labeled $t-1$ month.
 
 ### C. Rationale: Information Set Preservation
 Standard macro databases (like the current FRED-MD snapshot) are "Backfilled" with revisions. If a backtest used the 2025 snapshot to test a 2008 strategy, it would be using GDP and Employment figures that were revised *years after* the fact, inducing severe **Look-Ahead Bias**.
 
 The PIT architecture preserves the "Information Set" as it actually existed, ensuring that backtested performance is a realistic proxy for future live execution.
+
+### D. Conservative Lag Protocol
+To prevent inadvertent "peeking" at mid-month data releases, the system enforces a **1-month hard lag** on all historical vintages. 
+*   **Logical Assumption:** A vintage labeled "November 2025" is released by the St. Louis Fed between the 20th and 25th of November.
+*   **Trading Constraint:** This data is assumed **unavailable** for any trading signals generated on November 1st.
+*   **Availability Rule:** The "November 2025" vintage becomes active in the simulation only on **December 1st, 2025**.

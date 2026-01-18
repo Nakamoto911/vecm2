@@ -3396,7 +3396,7 @@ Validation employs a <b>Recursive Out-of-Sample (OOS) Walk-Forward</b> methodolo
 <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 4px solid #fbcb09;">
 <h3 style="font-size: 0.95rem; color: var(--text-primary); margin: 0 0 10px 0; display: flex; align-items: center; gap: 8px;">🕰️ Point-in-Time Data Architecture</h3>
 <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin: 0;">
-To eliminate survival and look-ahead bias, the backtest utilizes the <b>FRED-MD Real-Time Database</b>. Each time-step reflects the <b>historical vintage</b> available at that exact date, capturing the same reporting lags and revision cycles faced by practitioners in real-time. This ensures the simulation mirrors actual historical decision-making conditions.
+To eliminate survival and look-ahead bias, the backtest utilizes the <b>FRED-MD Real-Time Database</b>. Systemic integrity is maintained via a <b>Conservative Lag Protocol</b>: vintages labeled YYYY-MM are assumed available for trading only on <b>YYYY-MM+1</b>, reflecting the mid-month release cycle of FRED-MD. This ensures the simulation mirrors actual historical decision-making conditions.
 </p>
 </div>
 </div>
