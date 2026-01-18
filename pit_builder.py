@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from bs4 import BeautifulSoup
 from datetime import datetime
-from opus import prepare_macro_features
+from data_utils import prepare_macro_features
 
 # Configuration
 VINTAGE_DIR = 'data/vintages'
@@ -236,7 +236,7 @@ def build_pit_matrix():
 
 def clean_vintage_data(df):
     """
-    Simulates opus.py load_fred_md_data logic for a single vintage.
+    Simulates data_utils.py load_fred_md_data logic for a single vintage.
     """
     mapping = {
         'PAYEMS': 'PAYEMS',     # Labor

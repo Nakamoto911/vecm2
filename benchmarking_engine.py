@@ -9,7 +9,7 @@ from scipy.stats import spearmanr
 from sklearn.preprocessing import StandardScaler
 import warnings
 
-from opus import load_fred_md_data, load_asset_data, prepare_macro_features, compute_forward_returns
+from data_utils import load_fred_md_data, load_asset_data, prepare_macro_features, compute_forward_returns
 
 # Suppress convergence warnings for cleaner output during benchmark
 warnings.filterwarnings("ignore")
@@ -317,7 +317,7 @@ def display_current_regime_model(name, model, X, y, feature_names, asset_name):
 
 if __name__ == "__main__":
     # Load Real Data
-    print("Loading Real Data from opus.py pipeline...")
+    print("Loading Real Data from data_utils.py pipeline...")
     macro_data = load_fred_md_data()
     asset_prices = load_asset_data()
     

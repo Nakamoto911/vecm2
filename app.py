@@ -24,7 +24,7 @@ import pandas_datareader.data as web
 import warnings
 warnings.filterwarnings('ignore')
 from backtester import StrategyBacktester
-from opus import load_fred_md_data, load_asset_data, prepare_macro_features, compute_forward_returns
+from data_utils import load_fred_md_data, load_asset_data, prepare_macro_features, compute_forward_returns
 import os
 
 # NBER Recession Dates (approximate for FRED-MD plotting)
