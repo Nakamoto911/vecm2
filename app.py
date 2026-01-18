@@ -410,11 +410,12 @@ def stability_analysis(y: pd.Series, X: pd.DataFrame,
         X_window = X.iloc[start:end]
         
         # Drop NaN (forward returns missing at end)
-        valid = y_window.notna()
-        y_valid = y_window[valid]
-        X_valid = X_window[valid]
+        valid_mask = y_window.notna()
+        y_valid = y_window[valid_mask]
+        # Drop columns that have NaNs in this specific window slice
+        X_valid = X_window[valid_mask].dropna(axis=1)
         
-        if len(y_valid) < 120:  # Minimum 10 years of valid data
+        if len(y_valid) < 120 or X_valid.empty:  # Minimum 10 years of valid data
             continue
         
         # Estimate using Stability Selection
@@ -1420,19 +1421,29 @@ def get_live_model_signals(y, X, l1_ratio, min_persistence, estimation_window_ye
         
         # Final Asset-Specific Estimation
         y_valid = y_asset.dropna()
-        X_valid = X.loc[y_valid.index]
+        # Drop columns in X that have NaNs in the valid y range
+        X_valid_all = X.loc[y_valid.index].dropna(axis=1)
         
         # RESTRICT TO STABLE FEATURES ONLY
         if stable_features:
-            X_valid = X_valid[stable_features]
-            X_current = X.tail(1)[stable_features]
+            # Intersection in case some stable features were dropped due to NaNs in y_valid range
+            final_feats = [f for f in stable_features if f in X_valid_all.columns]
         else:
-            # Fallback to all if somehow empty
-            X_current = X.tail(1)
+            final_feats = X_valid_all.columns.tolist()
+            
+        if not final_feats:
+            final_feats = X_valid_all.columns.tolist()
+            # Absolute fallback if somehow X_valid_all has zero cols (impossible with current PIT)
+            final_feats = X.columns.tolist()[:5] 
+            
+        X_valid = X_valid_all[final_feats]
+        # Robust Current State Prediction: Take last row, fill NaNs with 0 (neutral) 
+        # as a failsafe against late-arriving macro data.
+        X_current = X.tail(1)[final_feats].infer_objects(copy=False).fillna(0)
 
         win = Winsorizer(threshold=3.0)
         X_valid_clean = win.fit_transform(X_valid)
-        X_current_clean = win.transform(X_current)
+        X_current_clean = win.transform(X_current).infer_objects(copy=False).fillna(0)
         
         if asset == 'EQUITY':
             model = RandomForestRegressor(n_estimators=100, max_depth=3, random_state=42)
@@ -2005,38 +2016,48 @@ def main():
     asset_prices = load_asset_data()
     descriptions = get_series_descriptions()
     
-    # Check for Point-in-Time (PIT) Matrix
-    PIT_FILE = 'PIT_Macro_Features.csv'
-    if os.path.exists(PIT_FILE):
-        st.success(f"⚡ Loading Diagonalized Point-in-Time (PIT) Matrix: `{PIT_FILE}`")
-        macro_features = pd.read_csv(PIT_FILE, index_col=0, parse_dates=True)
-        # We still need raw macro data for some metrics (Regime, Stress Score)
-        # and for the 'Series' tab.
-        macro_data = load_fred_md_data() 
-    else:
-        st.warning("⚠️ PIT Matrix not found. Generating features from default vintage (potential Revision Bias).")
-        macro_data = load_fred_md_data()
-        if macro_data.empty or asset_prices.empty:
-            st.error("Failed to load required data.")
-            return
-        macro_features = prepare_macro_features(macro_data)
+    # 1. LIVE MODEL DATA (LATEST VINTAGE)
+    # Always use the latest available vintage for "Nowcast" and current allocation
+    macro_data_current = load_fred_md_data()
+    if macro_data_current.empty or asset_prices.empty:
+        st.error("Failed to load required data.")
+        return
+    
+    # Generate features fresh from the latest vintage
+    X_current = prepare_macro_features(macro_data_current)
     y_forward = compute_forward_returns(asset_prices, horizon_months=horizon_months)
     
-    # Align again because of lags and forward shifts
-    valid_idx = macro_features.index.intersection(y_forward.index)
-    X = macro_features.loc[valid_idx]
-    y = y_forward.loc[valid_idx]
+    # Align for Live Model
+    valid_idx = X_current.index.intersection(y_forward.index)
+    X_live = X_current.loc[valid_idx]
+    y_live = y_forward.loc[valid_idx]
+
+    # 2. BACKTEST DATA (POINT-IN-TIME)
+    # Prefer PIT matrix for historical simulation to avoid revision bias
+    PIT_FILE = 'PIT_Macro_Features.csv'
+    if os.path.exists(PIT_FILE):
+        X_pit = pd.read_csv(PIT_FILE, index_col=0, parse_dates=True)
+        # st.toast(f"Backtest Engine: Using PIT Matrix ({len(X_pit)} rows)", icon="⏳")
+    else:
+        st.warning("⚠️ PIT Matrix not found. Backtest will use latest vintage (contains look-ahead bias).")
+        X_pit = X_current.copy()
+        
+    # Align for Backtest
+    # Note: y_forward is the same (asset prices don't get revised)
+    valid_idx_pit = X_pit.index.intersection(y_forward.index)
+    X_backtest = X_pit.loc[valid_idx_pit]
+    y_backtest = y_forward.loc[valid_idx_pit]
     
-    # 2. Main Analysis Loop
-    # A. Live Model (for current Allocation & Narrative) - Uses Full History
+    # 3. Execution
+    
+    # A. Live Model (for current Allocation & Narrative) - Uses Latest Vintage
     expected_returns, confidence_intervals, driver_attributions, stability_results_map, model_stats = get_live_model_signals(
-        y, X, l1_ratio, min_persistence, estimation_window_years, horizon_months
+        y_live, X_live, l1_ratio, min_persistence, estimation_window_years, horizon_months
     )
     
-    # B. Historic Backtest (Unbiased PIT Simulator) - Uses Walk-Forward Selection
-    # Note: rebalance_freq hardcoded to 12 (Annual) for standard backtest, or could be a param
+    # B. Historic Backtest (Unbiased PIT Simulator) - Uses PIT Features
     backtest_results, backtest_selection = get_historical_backtest(
-        y, X, 
+        y_backtest, X_backtest, 
         min_train_months=240, 
         horizon_months=horizon_months, 
         rebalance_freq=12,
@@ -2044,8 +2065,8 @@ def main():
         l1_ratio=l1_ratio
     )
             
-    # 3. Regime and Allocation
-    regime_status, stress_score, stress_indicators = evaluate_regime(macro_data, alert_threshold=alert_threshold)
+    # 4. Regime and Allocation
+    regime_status, stress_score, stress_indicators = evaluate_regime(macro_data_current, alert_threshold=alert_threshold)
     target_weights = compute_allocation(expected_returns, confidence_intervals, regime_status, risk_free_rate=risk_free_rate)
     
     # 4. Dashboard Implementation
@@ -2073,7 +2094,7 @@ def main():
             exp = expected_returns[asset]
             ci = confidence_intervals[asset]
             # Historical avg (approx)
-            avg_ret = y[asset].mean()
+            avg_ret = y_live[asset].mean()
             diff = exp - avg_ret
             rec = "OVERWEIGHT" if diff > 0.01 else "UNDERWEIGHT" if diff < -0.01 else "NEUTRAL"
             
@@ -2140,16 +2161,16 @@ def main():
                     selected_feat = attr.iloc[row_idx]['feature']
                     
                     st.plotly_chart(
-                        plot_combined_driver_analysis(macro_features, y_forward, selected_feat, asset, descriptions, horizon_months=horizon_months),
+                        plot_combined_driver_analysis(X_live, y_forward, selected_feat, asset, descriptions, horizon_months=horizon_months),
                         width='stretch'
                     )
 
                     # NEW: Deep Dive Analysis Row 2 (Correlation & Quintiles side-by-side)
                     c1, c2 = st.columns(2)
                     with c1:
-                        st.plotly_chart(plot_driver_scatter(macro_features, y_forward, selected_feat, asset, descriptions), width='stretch')
+                        st.plotly_chart(plot_driver_scatter(X_live, y_forward, selected_feat, asset, descriptions), width='stretch')
                     with c2:
-                        st.plotly_chart(plot_quintile_analysis(macro_features, y_forward, selected_feat, asset, horizon_months=horizon_months), width='stretch')
+                        st.plotly_chart(plot_quintile_analysis(X_live, y_forward, selected_feat, asset, horizon_months=horizon_months), width='stretch')
                 
 
     with tab3:
@@ -2261,7 +2282,7 @@ def main():
                 start_row = 2
                 # Add asset return trace(s) at row 1
                 for asset in selected_assets:
-                    asset_data = y[asset].dropna()
+                    asset_data = y_live[asset].dropna()
                     
                     # Use unique colors for assets to distinguish from macro
                     asset_color = '#ffffff' # White for high contrast
@@ -2440,7 +2461,7 @@ def main():
             
             if not oos_results.empty:
                 # Align actual returns with OOS predictions
-                actual_oos = y[asset_to_plot].loc[oos_results.index]
+                actual_oos = y_backtest[asset_to_plot].loc[oos_results.index]
                 
                 # Plot
                 fig_backtest = plot_backtest(
@@ -2683,7 +2704,7 @@ def main():
                 # preds_df, lower_ci_df = get_aggregated_predictions(y, X, horizon_months=horizon_months)
                 preds_df = pd.DataFrame({k: v['predicted_return'] for k, v in backtest_results.items()}).dropna()
                 lower_ci_df = pd.DataFrame({k: v['lower_ci'] for k, v in backtest_results.items()}).dropna()
-                hist_stress = get_historical_stress(macro_data)
+                hist_stress = get_historical_stress(macro_data_current)
                 
                 # Filter by selected date range
                 if sim_start and sim_end:

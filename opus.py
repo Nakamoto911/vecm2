@@ -56,13 +56,32 @@ def load_fred_md_data(file_path: str = '2025-11-MD.csv') -> pd.DataFrame:
             return pd.DataFrame()
             
         df_raw = pd.read_csv(file_path)
-        # Drop the transformation row if it exists (usually row 0 in pandas if header is handled, 
-        # but FRED-MD CSVs have row 1 as transformation codes)
-        # df_raw.iloc[0] is the first data row if we use header=0. 
-        # Let's check the logic used in app.py
-        df = df_raw.iloc[1:].copy()
-        df['sasdate'] = pd.to_datetime(df['sasdate'], utc=True).dt.tz_localize(None)
-        df = df.set_index('sasdate')
+        
+        # Determine if it's a standard FRED-MD (has sasdate column) or PIT matrix (index)
+        if 'sasdate' in df_raw.columns:
+            # Transformation row detection
+            try:
+                # McCracken standard: Row 1 (df index 0) has transform codes (1-7)
+                first_row = df_raw.iloc[0, 1:]
+                is_trans = all(pd.to_numeric(first_row, errors='coerce').fillna(0).between(1, 7))
+                if is_trans:
+                    df = df_raw.iloc[1:].copy()
+                else:
+                    df = df_raw.copy()
+            except:
+                df = df_raw.iloc[1:].copy()
+                
+            df['sasdate'] = pd.to_datetime(df['sasdate'], utc=True, errors='coerce').dt.tz_localize(None)
+            df = df.dropna(subset=['sasdate']).set_index('sasdate')
+        else:
+            # Assume it's a PIT matrix with index as date
+            df = df_raw.copy()
+            if 'Unnamed: 0' in df.columns:
+                df = df.rename(columns={'Unnamed: 0': 'date'})
+            
+            date_col = 'date' if 'date' in df.columns else df.columns[0]
+            df[date_col] = pd.to_datetime(df[date_col], utc=True, errors='coerce').dt.tz_localize(None)
+            df = df.dropna(subset=[date_col]).set_index(date_col)
         
         for col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -110,16 +129,37 @@ def load_fred_md_data(file_path: str = '2025-11-MD.csv') -> pd.DataFrame:
 def load_asset_data(start_date: str = '1960-01-01', macro_file: str = '2025-11-MD.csv') -> pd.DataFrame:
     """Load long history asset prices."""
     
+    # Try to find the latest vintage if the requested one is missing
+    if not os.path.exists(macro_file):
+        vintage_dir = 'data/vintages'
+        if os.path.exists(vintage_dir):
+            v_files = sorted([f for f in os.listdir(vintage_dir) if f.endswith('.csv')])
+            if v_files:
+                macro_file = os.path.join(vintage_dir, v_files[-1])
+
     # EQUITIES from FRED-MD (S&P 500)
     equity_prices = pd.Series(dtype=float)
     try:
         if os.path.exists(macro_file):
-            df_macro_raw = pd.read_csv(macro_file).iloc[1:]
-            df_macro_raw['sasdate'] = pd.to_datetime(df_macro_raw['sasdate'], utc=True).dt.tz_localize(None)
-            df_macro_raw.set_index('sasdate', inplace=True)
+            df_m = pd.read_csv(macro_file)
             
-            if 'S&P 500' in df_macro_raw.columns:
-                equity_prices = pd.to_numeric(df_macro_raw['S&P 500'], errors='coerce').dropna()
+            # Date detection
+            if 'sasdate' in df_m.columns:
+                df_m = df_m.iloc[1:] # Skip transform row
+                df_m['date'] = pd.to_datetime(df_m['sasdate'], utc=True, errors='coerce').dt.tz_localize(None)
+            else:
+                date_col = 'Unnamed: 0' if 'Unnamed: 0' in df_m.columns else df_m.columns[0]
+                df_m['date'] = pd.to_datetime(df_m[date_col], utc=True, errors='coerce').dt.tz_localize(None)
+            
+            df_m = df_m.dropna(subset=['date']).set_index('date')
+            
+            for col in ['S&P 500', 'SP500', 'S&P_500']:
+                if col in df_m.columns:
+                    equity_prices = pd.to_numeric(df_m[col], errors='coerce').dropna()
+                    break
+                elif f"{col}_level" in df_m.columns:
+                    equity_prices = pd.to_numeric(df_m[f"{col}_level"], errors='coerce').dropna()
+                    break
     except Exception as e:
         print(f"Equity data error: {e}")
 

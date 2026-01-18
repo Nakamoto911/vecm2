@@ -177,8 +177,9 @@ def run_benchmarking_engine(X, y, start_idx, step=12, horizon=12, regime_idx=0):
         if purge_idx <= 0:
             continue
             
-        train_X_purged = train_X_raw.iloc[:purge_idx]
-        train_y_purged = train_y.iloc[:purge_idx]
+        train_X_purged_all = train_X_raw.iloc[:purge_idx]
+        train_y_purged = train_y.iloc[:purge_idx].dropna()
+        train_X_purged = train_X_purged_all.loc[train_y_purged.index]
         
         test_X_raw = X.iloc[i : min(i + step, len(X))]
         test_y = y.iloc[i : min(i + step, len(X))]

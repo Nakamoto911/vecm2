@@ -249,7 +249,8 @@ def clean_vintage_data(df):
         'FEDFUNDS': 'FEDFUNDS', # Rates
         'GS10': 'GS10',         # Rates
         'HOUST': 'HOUST',       # Housing
-        'M2SL': 'M2'            # Money
+        'M2SL': 'M2',           # Money
+        'S&P 500': 'S&P 500'    # Equities
     }
     
     data = pd.DataFrame(index=df.index)
