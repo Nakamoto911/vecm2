@@ -283,7 +283,8 @@ def load_hybrid_asset_data(start_date: str = '1960-01-01', macro_file: str = '20
             spliced_data[asset] = head
 
     # 4. Final Sanitization (Critical for preventing White Screen)
-    # Replace 0 with NaN to avoid division by zero in returns, then drop all NaNs
+    # Replace 0 AND Infinite values with NaN to avoid division/rendering issues, then drop
+    spliced_data = spliced_data.replace([np.inf, -np.inf], np.nan)
     spliced_data = spliced_data.replace(0, np.nan).dropna()
     
     # Ensure strictly numeric and clean

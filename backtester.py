@@ -44,7 +44,8 @@ class StrategyBacktester:
         self.regime = regime_signals.loc[common_idx]
         
         # Calculate monthly returns for simulation
-        self.returns = self.prices.pct_change().dropna()
+        # Sanitize Inf values immediately to prevent Plotly crashes
+        self.returns = self.prices.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
         self.common_idx = self.returns.index
         self.assets = ['EQUITY', 'BONDS', 'GOLD']
         
