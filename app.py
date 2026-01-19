@@ -2054,6 +2054,8 @@ def main():
     PIT_FILE = 'PIT_Macro_Features.csv'
     if os.path.exists(PIT_FILE):
         X_pit = pd.read_csv(PIT_FILE, index_col=0, parse_dates=True)
+        # Align to Month End to match Asset Data
+        X_pit.index = X_pit.index + pd.offsets.MonthEnd(0)
         # st.toast(f"Backtest Engine: Using PIT Matrix ({len(X_pit)} rows)", icon="⏳")
     else:
         st.warning("⚠️ PIT Matrix not found. Backtest will use latest vintage (contains look-ahead bias).")

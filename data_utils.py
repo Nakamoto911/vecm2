@@ -2,6 +2,15 @@ import pandas as pd
 import numpy as np
 import pandas_datareader.data as web
 import os
+from yahooquery import Ticker
+
+try:
+    import streamlit as st
+    def cache_data_wrapper(func):
+        return st.cache_data(ttl=86400, show_spinner="Fetching Data...") (func)
+except ImportError:
+    def cache_data_wrapper(func):
+        return func
 
 def compute_forward_returns(prices: pd.DataFrame, horizon_months: int = 12) -> pd.DataFrame:
     """
@@ -49,6 +58,7 @@ def prepare_macro_features(macro_data: pd.DataFrame) -> pd.DataFrame:
     return features.dropna()
 
 
+@cache_data_wrapper
 def load_fred_md_data(file_path: str = '2025-11-MD.csv') -> pd.DataFrame:
     """Load and process FRED-MD data for specified macro variables."""
     try:
@@ -82,6 +92,9 @@ def load_fred_md_data(file_path: str = '2025-11-MD.csv') -> pd.DataFrame:
             date_col = 'date' if 'date' in df.columns else df.columns[0]
             df[date_col] = pd.to_datetime(df[date_col], utc=True, errors='coerce').dt.tz_localize(None)
             df = df.dropna(subset=[date_col]).set_index(date_col)
+        
+        # Align to Month End to match Asset Data
+        df.index = df.index + pd.offsets.MonthEnd(0)
         
         for col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -126,24 +139,26 @@ def load_fred_md_data(file_path: str = '2025-11-MD.csv') -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def load_asset_data(start_date: str = '1960-01-01', macro_file: str = '2025-11-MD.csv') -> pd.DataFrame:
-    """Load long history asset prices."""
-    
-    # Try to find the latest vintage if the requested one is missing
-    if not os.path.exists(macro_file):
-        vintage_dir = 'data/vintages'
-        if os.path.exists(vintage_dir):
-            v_files = sorted([f for f in os.listdir(vintage_dir) if f.endswith('.csv')])
-            if v_files:
-                macro_file = os.path.join(vintage_dir, v_files[-1])
 
-    # EQUITIES from FRED-MD (S&P 500)
-    equity_prices = pd.Series(dtype=float)
+@cache_data_wrapper
+def load_hybrid_asset_data(start_date: str = '1960-01-01', macro_file: str = '2025-11-MD.csv') -> pd.DataFrame:
+    """
+    Load hybrid asset data: ETF 'Head' spliced onto Macro Proxy 'Tail'.
+    Uses Ratio Splicing to eliminate tracking error/look-ahead bias.
+    """
+    # 1. Fetch Proxy Tails (FRED-MD)
+    # We need the raw series for backfilling
+    df_proxies_raw = pd.DataFrame()
     try:
+        if not os.path.exists(macro_file):
+            vintage_dir = 'data/vintages'
+            if os.path.exists(vintage_dir):
+                v_files = sorted([f for f in os.listdir(vintage_dir) if f.endswith('.csv')])
+                if v_files:
+                    macro_file = os.path.join(vintage_dir, v_files[-1])
+
         if os.path.exists(macro_file):
             df_m = pd.read_csv(macro_file)
-            
-            # Date detection
             if 'sasdate' in df_m.columns:
                 df_m = df_m.iloc[1:] # Skip transform row
                 df_m['date'] = pd.to_datetime(df_m['sasdate'], utc=True, errors='coerce').dt.tz_localize(None)
@@ -151,48 +166,110 @@ def load_asset_data(start_date: str = '1960-01-01', macro_file: str = '2025-11-M
                 date_col = 'Unnamed: 0' if 'Unnamed: 0' in df_m.columns else df_m.columns[0]
                 df_m['date'] = pd.to_datetime(df_m[date_col], utc=True, errors='coerce').dt.tz_localize(None)
             
+            # Align to Month End
+            df_m['date'] = df_m['date'] + pd.offsets.MonthEnd(0)
             df_m = df_m.dropna(subset=['date']).set_index('date')
             
-            for col in ['S&P 500', 'SP500', 'S&P_500']:
-                if col in df_m.columns:
-                    equity_prices = pd.to_numeric(df_m[col], errors='coerce').dropna()
-                    break
-                elif f"{col}_level" in df_m.columns:
-                    equity_prices = pd.to_numeric(df_m[f"{col}_level"], errors='coerce').dropna()
-                    break
+            # Map FRED-MD columns to our asset names
+            sp_col = next((c for c in ['S&P 500', 'SP500', 'S&P_500'] if c in df_m.columns), None)
+            if sp_col:
+                df_proxies_raw['EQUITY'] = pd.to_numeric(df_m[sp_col], errors='coerce')
     except Exception as e:
-        print(f"Equity data error: {e}")
+        print(f"Error fetching Equity Proxy: {e}")
 
-    # GOLD - using PPI for Gold (WPU1022) as long-term proxy
-    gold_prices = pd.Series(dtype=float)
+    # Gold Proxy (PPI)
     try:
         gold_ppi = web.DataReader('WPU1022', 'fred', start_date)
         gold_ppi.index = pd.to_datetime(gold_ppi.index, utc=True).tz_localize(None)
-        gold_ppi = gold_ppi.resample('MS').last()
-        gold_prices = gold_ppi['WPU1022'].dropna()
+        gold_ppi = gold_ppi.resample('ME').last()
+        df_proxies_raw['GOLD'] = gold_ppi['WPU1022']
     except Exception as e:
-        print(f"Gold data error: {e}")
+        print(f"Error fetching Gold Proxy: {e}")
 
-    # BONDS - synthetic total return from GS10
-    bond_prices = pd.Series(dtype=float)
+    # Bond Proxy (Synthetic from GS10)
     try:
         gs10 = web.DataReader('GS10', 'fred', start_date)
         gs10.index = pd.to_datetime(gs10.index, utc=True).tz_localize(None)
+        gs10 = gs10.resample('ME').last()
         yields = gs10['GS10'] / 100
         duration = 7.5
-        # Calculate monthly total returns
         carry = yields.shift(1) / 12
         price_change = -duration * (yields - yields.shift(1))
         synth_ret = carry + price_change
-        # Convert returns to index
-        bond_prices = 100 * (1 + synth_ret.fillna(0)).cumprod()
+        # Use simple return for backcasting, but we'll return an index
+        df_proxies_raw['BONDS_RET'] = synth_ret
     except Exception as e:
-        print(f"Bond data error: {e}")
+        print(f"Error fetching Bond Proxy: {e}")
 
-    df_prices = pd.DataFrame({
-        'EQUITY': equity_prices,
-        'GOLD': gold_prices,
-        'BONDS': bond_prices
-    }).dropna()
+    # 2. Fetch ETF Heads (YahooQuery)
+    etf_map = {'SPY': 'EQUITY', 'IEF': 'BONDS', 'GLD': 'GOLD'}
+    try:
+        t = Ticker(list(etf_map.keys()), asynchronous=True)
+        df_etf_raw = t.history(period='max', interval='1d')
+        df_etfs = df_etf_raw.reset_index().pivot(index='date', columns='symbol', values='adjclose')
+        df_etfs = df_etfs.rename(columns=etf_map)
+        df_etfs.index = pd.to_datetime(df_etfs.index, utc=True).tz_localize(None)
+        df_etfs = df_etfs.resample('ME').last()
+    except Exception as e:
+        print(f"Error fetching ETF data: {e}")
+        # Fallback to load_asset_data logic if Yahoo fails? No, let's keep it clean.
+        return load_asset_data(start_date, macro_file)
+
+    # 3. Splice Engine (Ratio Splicing)
+    spliced_data = pd.DataFrame()
     
-    return df_prices
+    for asset in ['EQUITY', 'BONDS', 'GOLD']:
+        if asset not in df_etfs.columns:
+            continue
+            
+        # T_splice = first valid date of ETF
+        head_series = df_etfs[asset].dropna()
+        if head_series.empty:
+            continue
+            
+        t_splice = head_series.index[0]
+        head = head_series.loc[t_splice:]
+        
+        # Get Proxy Returns
+        if asset == 'BONDS':
+            # We already calculated returns for Bonds
+            proxy_ret = df_proxies_raw['BONDS_RET']
+        else:
+            # Calculate % change for Equity and Gold proxies
+            proxy_ret = df_proxies_raw[asset].pct_change()
+            
+        # Tail returns restricted to pre-inception
+        # We need the return from (t-1) to t to backcast Price(t-1)
+        # So for T_splice, we need the return that led to T_splice if available
+        # But actually, the formula is Price(t-1) = Price(t) / (1 + Ret(t))
+        # where Ret(t) is return from t-1 to t.
+        tail_returns = proxy_ret.loc[:t_splice].iloc[::-1] # Reverse order for backcasting
+        
+        # Backcast Loop
+        current_price = head.iloc[0]
+        history = []
+        # The first item in tail_returns is likely T_splice itself.
+        for date, ret in tail_returns.items():
+            if date >= t_splice:
+                continue # Skip the overlap date's return as it leads to t_splice
+            if pd.isna(ret):
+                continue
+            prev_price = current_price / (1 + ret)
+            history.append((date, prev_price))
+            current_price = prev_price
+        
+        # Merge
+        if history:
+            tail = pd.DataFrame(history, columns=['date', asset]).set_index('date').sort_index()
+            spliced_data[asset] = pd.concat([tail[asset], head])
+        else:
+            spliced_data[asset] = head
+
+    return spliced_data.dropna()
+
+
+def load_asset_data(start_date: str = '1960-01-01', macro_file: str = '2025-11-MD.csv') -> pd.DataFrame:
+    """
+    Deprecated: Wrapper for load_hybrid_asset_data to maintain backward compatibility.
+    """
+    return load_hybrid_asset_data(start_date, macro_file)
