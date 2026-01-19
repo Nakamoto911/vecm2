@@ -203,68 +203,93 @@ def load_hybrid_asset_data(start_date: str = '1960-01-01', macro_file: str = '20
 
     # 2. Fetch ETF Heads (YahooQuery)
     etf_map = {'SPY': 'EQUITY', 'IEF': 'BONDS', 'GLD': 'GOLD'}
+    df_etfs = pd.DataFrame()
     try:
-        t = Ticker(list(etf_map.keys()), asynchronous=True)
+        # FIX: asynchronous=False to prevent event loop issues on Streamlit Cloud
+        t = Ticker(list(etf_map.keys()), asynchronous=False)
         df_etf_raw = t.history(period='max', interval='1d')
-        df_etfs = df_etf_raw.reset_index().pivot(index='date', columns='symbol', values='adjclose')
-        df_etfs = df_etfs.rename(columns=etf_map)
-        df_etfs.index = pd.to_datetime(df_etfs.index, utc=True).tz_localize(None)
-        df_etfs = df_etfs.resample('ME').last()
+        if not df_etf_raw.empty:
+            df_etfs = df_etf_raw.reset_index().pivot(index='date', columns='symbol', values='adjclose')
+            df_etfs = df_etfs.rename(columns=etf_map)
+            df_etfs.index = pd.to_datetime(df_etfs.index, utc=True).tz_localize(None)
+            df_etfs = df_etfs.resample('ME').last()
     except Exception as e:
-        print(f"Error fetching ETF data: {e}")
-        # Fallback to load_asset_data logic if Yahoo fails? No, let's keep it clean.
-        return load_asset_data(start_date, macro_file)
+        # FIX: Remove recursive call to load_asset_data(). 
+        # Just log warning; Splice Engine will use proxies as fallback.
+        if 'st' in globals():
+            st.warning(f"Yahoo API failed: {e}. Using proxy data.")
+        else:
+            print(f"Error fetching ETF data: {e}")
 
     # 3. Splice Engine (Ratio Splicing)
     spliced_data = pd.DataFrame()
     
     for asset in ['EQUITY', 'BONDS', 'GOLD']:
-        if asset not in df_etfs.columns:
-            continue
-            
         # T_splice = first valid date of ETF
-        head_series = df_etfs[asset].dropna()
-        if head_series.empty:
-            continue
+        if asset in df_etfs.columns and not df_etfs[asset].dropna().empty:
+            head_series = df_etfs[asset].dropna()
+            t_splice = head_series.index[0]
+            head = head_series.loc[t_splice:]
+        else:
+            # Fallback: No ETF data, use proxies for entire history
+            t_splice = pd.Timestamp.max
+            head = pd.Series(dtype=float)
             
-        t_splice = head_series.index[0]
-        head = head_series.loc[t_splice:]
-        
         # Get Proxy Returns
         if asset == 'BONDS':
             # We already calculated returns for Bonds
-            proxy_ret = df_proxies_raw['BONDS_RET']
+            proxy_ret = df_proxies_raw.get('BONDS_RET', pd.Series(dtype=float))
         else:
             # Calculate % change for Equity and Gold proxies
-            proxy_ret = df_proxies_raw[asset].pct_change()
+            proxy_ret = df_proxies_raw[asset].pct_change() if asset in df_proxies_raw.columns else pd.Series(dtype=float)
             
         # Tail returns restricted to pre-inception
-        # We need the return from (t-1) to t to backcast Price(t-1)
-        # So for T_splice, we need the return that led to T_splice if available
-        # But actually, the formula is Price(t-1) = Price(t) / (1 + Ret(t))
-        # where Ret(t) is return from t-1 to t.
         tail_returns = proxy_ret.loc[:t_splice].iloc[::-1] # Reverse order for backcasting
         
         # Backcast Loop
-        current_price = head.iloc[0]
-        history = []
-        # The first item in tail_returns is likely T_splice itself.
-        for date, ret in tail_returns.items():
-            if date >= t_splice:
-                continue # Skip the overlap date's return as it leads to t_splice
-            if pd.isna(ret):
+        if not head.empty:
+            current_price = head.iloc[0]
+            history = []
+            for date, ret in tail_returns.items():
+                if date >= t_splice:
+                    continue 
+                if pd.isna(ret):
+                    continue
+                prev_price = current_price / (1 + ret)
+                history.append((date, prev_price))
+                current_price = prev_price
+        else:
+            # Full proxy reconstruction if no head exists
+            # We start from 1.0 at the end of proxy data or fixed point
+            current_price = 1.0
+            history = []
+            # For full proxy, we go forward then maybe normalize, 
+            # but here it's easier to just use the raw proxy if it's EQUITY/GOLD
+            if asset in df_proxies_raw.columns and asset != 'BONDS':
+                spliced_data[asset] = df_proxies_raw[asset]
                 continue
-            prev_price = current_price / (1 + ret)
-            history.append((date, prev_price))
-            current_price = prev_price
+            elif asset == 'BONDS' and 'BONDS_RET' in df_proxies_raw.columns:
+                # Reconstruct bond index from returns
+                reconstructed = (1 + df_proxies_raw['BONDS_RET'].fillna(0)).cumprod()
+                spliced_data[asset] = reconstructed
+                continue
+            history = []
         
         # Merge
         if history:
             tail = pd.DataFrame(history, columns=['date', asset]).set_index('date').sort_index()
             spliced_data[asset] = pd.concat([tail[asset], head])
-        else:
+        elif not head.empty:
             spliced_data[asset] = head
 
+    # 4. Final Sanitization (Critical for preventing White Screen)
+    # Replace 0 with NaN to avoid division by zero in returns, then drop all NaNs
+    spliced_data = spliced_data.replace(0, np.nan).dropna()
+    
+    # Ensure strictly numeric and clean
+    for col in spliced_data.columns:
+        spliced_data[col] = pd.to_numeric(spliced_data[col], errors='coerce')
+    
     return spliced_data.dropna()
 
 
