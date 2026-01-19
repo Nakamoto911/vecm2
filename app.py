@@ -2859,7 +2859,7 @@ def main():
                     )
 
                     # 1. Asset Allocation (Row 1)
-                    weights_df = lab_results_disp['weights'].fillna(0)
+                    weights_df = lab_results_disp['weights'].replace([np.inf, -np.inf], 0.0).fillna(0.0)
                     colors_map = {'EQUITY': '#ff6b35', 'BONDS': '#4da6ff', 'GOLD': '#ffd700', 'CASH': '#444'}
                     for asset in ['EQUITY', 'BONDS', 'GOLD', 'CASH']:
                         if asset in weights_df.columns:
