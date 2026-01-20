@@ -2124,16 +2124,9 @@ def main():
                 l1_ratio=l1_ratio
             )
             
-            # C. Historic Backtest (Unbiased PIT Simulator) - Uses PIT Features
-            st.write("⌛ **Running Unbiased PIT Backtest (Historical Vintages)...**")
-            backtest_results, backtest_selection = get_historical_backtest(
-                y_backtest, X_backtest, 
-                min_train_months=240, 
-                horizon_months=horizon_months, 
-                rebalance_freq=12,
-                selection_threshold=min_persistence,
-                l1_ratio=l1_ratio
-            )
+            # C. Historic Backtest (DEFERRED - Lazy Loading in Tab 6)
+            # st.write("⌛ **Running Unbiased PIT Backtest (Historical Vintages)...**")
+            # backtest_results, backtest_selection = get_historical_backtest(...)
             
             # Store in session state for persistence if necessary (though cached functions are usually enough)
             st.session_state.engine_results = {
@@ -2144,11 +2137,11 @@ def main():
                 'model_stats': model_stats,
                 'prediction_results': prediction_results,
                 'prediction_selection': prediction_selection,
-                'backtest_results': backtest_results,
-                'backtest_selection': backtest_selection
+                'backtest_results': None,  # Initialize as None
+                'backtest_selection': None # Initialize as None
             }
             save_engine_state(st.session_state.engine_results)
-            status.update(label="✅ **Macro Engine Synchronized**", state="complete", expanded=False)
+            status.update(label="✅ **Macro Engine Synchronized (Live Mode)**", state="complete", expanded=False)
     
     # Unpack for subsequent logic
     expected_returns = st.session_state.engine_results['expected_returns']
@@ -2763,6 +2756,7 @@ def main():
                 params['weighting_scheme'] = lc5.selectbox("Weighting Scheme", ["Equal", "Proportional"], index=1)
             
             st.divider()
+            st.info("💡 **Note**: The first simulation run will take ~30-60 seconds to process historical Point-in-Time data.")
             submitted = st.form_submit_button("🚀 RUN STRATEGY SIMULATION", width='stretch', type="primary")
 
         # Run Backtest
@@ -2797,7 +2791,33 @@ def main():
             }
 
             with st.spinner("Initializing strategy engine..."):
-                # Prepare inputs
+                # 1. Lazy Load Check for Unbiased PIT Simulation results
+                if st.session_state.engine_results['backtest_results'] is None:
+                    with st.status("⏳ **First Run Initialization:** Running Unbiased Walk-Forward Simulation on 25+ years of Point-in-Time data...", expanded=True) as status:
+                        st.write("⚙️ *Starting recursive backtest loop for EQUITY, BONDS, and GOLD...*")
+                        pit_results, pit_selection = get_historical_backtest(
+                            y_backtest, X_backtest, 
+                            min_train_months=240, 
+                            horizon_months=horizon_months, 
+                            rebalance_freq=12,
+                            selection_threshold=min_persistence,
+                            l1_ratio=l1_ratio
+                        )
+                        
+                        # Update State
+                        st.session_state.engine_results['backtest_results'] = pit_results
+                        st.session_state.engine_results['backtest_selection'] = pit_selection
+                        
+                        # Persist immediately so we don't run this again on refresh
+                        save_engine_state(st.session_state.engine_results)
+                        
+                        status.update(label="✅ PIT Simulation Complete & Cached!", state="complete", expanded=False)
+                        st.toast("PIT Simulation Complete & Cached!", icon="✅")
+
+                # 2. Retrieve Results (Now guaranteed to exist)
+                backtest_results = st.session_state.engine_results['backtest_results']
+
+                # 3. Prepare Inputs
                 # Prepare inputs from Unbiased Simulator Results
                 # preds_df, lower_ci_df = get_aggregated_predictions(y, X, horizon_months=horizon_months)
                 preds_df = pd.DataFrame({k: v['predicted_return'] for k, v in backtest_results.items()}).dropna()
