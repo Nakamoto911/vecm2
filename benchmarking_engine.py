@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression, HuberRegressor, ElasticNetCV
+from sklearn.linear_model import LinearRegression, HuberRegressor, ElasticNetCV, ElasticNet
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.dummy import DummyRegressor
 from sklearn.metrics import mean_squared_error
@@ -168,74 +168,75 @@ class FactorStripper(BaseEstimator, TransformerMixin):
         return X_df
 
 def select_features_elastic_net(y: pd.Series, X: pd.DataFrame, 
-                                 n_iterations: int = 20,
-                                 sample_fraction: float = 0.7,
-                                 threshold: float = 0.6,
+                                 n_iterations: int = 1, # Default reduced to 1 for speed
+                                 sample_fraction: float = 0.9, # Higher fraction for single run
+                                 threshold: float = 0.0, # Threshold irrelevant if n_iter=1 (coef!=0)
                                  l1_ratio: float = 0.5,
                                  st_progress=None) -> tuple:
     """
-    Implement Stability Selection via bootstrapping with Unvariate Screening optimization.
+    Feature selection. 
+    If n_iterations=1 (Fast Mode), uses standard ElasticNet (SelectFromModel).
+    If n_iterations>1 (Stable Mode), uses Bootstrapped Stability Selection.
     """
-    from sklearn.linear_model import ElasticNet
-    from sklearn.preprocessing import StandardScaler
     
     # Pre-clean
     X = X.dropna(axis=1)
     if X.empty:
         return [], pd.Series(dtype=float)
 
-    # --- OPTIMIZATION: Univariate Screening (Sure Independence Screening) ---
-    # If feature space is large (>100), filter to top 100 by simple correlation first.
-    # This reduces the dimensionality for the iterative solver significantly.
+    # 1. Univariate Screening (Keep top 100 to protect Solver)
     if X.shape[1] > 100:
-        # Calculate absolute correlation with target
-        # Handle potential constant columns that result in NaN correlation
         corrs = X.corrwith(y).abs().fillna(0)
         top_cols = corrs.sort_values(ascending=False).head(100).index.tolist()
         X_screened = X[top_cols]
     else:
         X_screened = X
-    # -----------------------------------------------------------------------
 
     scaler = StandardScaler()
     X_scaled = pd.DataFrame(scaler.fit_transform(X_screened), columns=X_screened.columns, index=X_screened.index)
     
+    # --- FAST PATH: Single Iteration (Standard Lasso/Net) ---
+    if n_iterations == 1:
+        # Standard fit on full data
+        model = ElasticNet(alpha=0.01, l1_ratio=l1_ratio, max_iter=1000, tol=1e-3, random_state=42)
+        model.fit(X_scaled, y)
+        
+        # Select features with non-zero coefficients
+        selected = X_screened.columns[model.coef_ != 0].tolist()
+        
+        # Fallback if nothing selected
+        if not selected:
+            # Pick max coef
+            best_idx = np.argmax(np.abs(model.coef_))
+            selected = [X_screened.columns[best_idx]]
+            
+        # Return mock probabilities (1.0 for selected)
+        probs = pd.Series(0, index=X.columns)
+        probs[selected] = 1.0
+        return selected, probs
+
+    # --- STABLE PATH: Bootstrap (Slower, for Diagnostics) ---
     selection_counts = pd.Series(0, index=X_screened.columns)
     
-    progress_container = None
-    if st_progress:
-        progress_container = st_progress.empty()
-    
     for i in range(n_iterations):
-        if progress_container:
-            progress_container.write(f"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;• Stability Bootstrap {i+1}/{n_iterations}...")
+        if st_progress and i % 5 == 0: # Reduce UI updates
+            st_progress.write(f"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;• Stability Bootstrap {i+1}/{n_iterations}...")
             
         indices = np.random.choice(len(y), size=int(len(y) * sample_fraction), replace=False)
         y_sample = y.iloc[indices]
         X_sample = X_scaled.iloc[indices]
         
-        # Reduced max_iter for faster selection-only fitting
         model = ElasticNet(alpha=0.01, l1_ratio=l1_ratio, max_iter=1000, tol=1e-3)
         model.fit(X_sample, y_sample)
         selection_counts[model.coef_ != 0] += 1
         
-    # 2. Calculate Probabilities
     selection_probs = selection_counts / n_iterations
-    
-    # 3. Apply Threshold
     selected = selection_probs[selection_probs > threshold].index.tolist()
     
-    # 4. Fallback Logic: ensure at least one feature
     if not selected and not selection_probs.empty:
         selected = [selection_probs.idxmax()]
-    
-    # Deduplicate (preserve order where possible)
-    final_selected = []
-    for f in selected:
-        if f not in final_selected:
-            final_selected.append(f)
             
-    return final_selected, selection_probs
+    return selected, selection_probs
 
 # ==========================================
 # 2. Custom Model: Regime Switching

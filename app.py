@@ -184,16 +184,14 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
     """
     Recursive walk-forward (expanding window) backtest (V2.1 Optimized Pipeline).
     """
-    from scipy.stats import t
     
     results = []
     selection_history = []
     
-    # --- Global Optimization: Sanitize once outside the loop ---
-    X = X.apply(pd.to_numeric, errors='coerce')
-    y = y.apply(pd.to_numeric, errors='coerce')
+    # 1. OPTIMIZATION: Convert to float32 to reduce memory/CPU overhead
+    X = X.apply(pd.to_numeric, errors='coerce').astype('float32')
+    y = y.apply(pd.to_numeric, errors='coerce').astype('float32')
     
-    # Intersect to ensure common dates where we have BOTH features and target
     common_global = X.index.intersection(y.index)
     X = X.loc[common_global]
     y = y.loc[common_global]
@@ -219,7 +217,7 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
     # 2. Global Expansion (Lags, Rolling windows)
     # This is mathematically safe to do globally as it respects time indices (no look-ahead).
     expander = MacroFeatureExpander()
-    X_expanded_global = expander.transform(X_ortho_global)
+    X_expanded_global = expander.transform(X_ortho_global).astype('float32') # Ensure float32
     
     # --- [FIX] Global NaN Sanitization ---
     # Since ElasticNet/LinearRegression do not handle NaNs, and macro data often has
@@ -258,9 +256,13 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         # We intersection with predict_idx to ensure keys exist
         X_test_expanded = X_expanded_global.loc[X_expanded_global.index.intersection(predict_idx)]
         
-        # 3. Stability Selection (Uses the optimized 'Sure Screening' from benchmarking_engine)
+        # 3. OPTIMIZATION: Single-Pass Selection (n_iterations=1)
+        # We skip the bootstrap for backtesting speed. It's close enough.
         stable_feats, _ = select_features_elastic_net(
-            y_train_prep, X_train_prep, threshold=selection_threshold, l1_ratio=l1_ratio, n_iterations=5
+            y_train_prep, X_train_prep, 
+            threshold=selection_threshold, 
+            l1_ratio=l1_ratio, 
+            n_iterations=1 # <--- KEY SPEEDUP
         )
         if not stable_feats: stable_feats = X_train_prep.columns[:10].tolist()
             
@@ -292,8 +294,7 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
                 model.fit(X_train_final, y_train_prep)
                 raw_preds = model.predict(X_test_final)
             elif asset_class == 'BONDS':
-                from sklearn.linear_model import ElasticNet
-                model = ElasticNet(alpha=0.01, l1_ratio=l1_ratio, max_iter=1000)
+                model = ElasticNet(alpha=0.01, l1_ratio=l1_ratio, max_iter=500) # Reduced max_iter
                 model.fit(X_train_final, y_train_prep)
                 raw_preds = model.predict(X_test_final)
             else: # GOLD
@@ -311,8 +312,9 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         dof_safe = max(1, int(n_eff - X_train_final.shape[1] - 1)) if not X_train_final.empty else 10
         t_crit = t.ppf(0.95, df=dof_safe) 
 
-        if i % (rebalance_freq * 2) == 0:
-            st.write(f"&nbsp;&nbsp;&nbsp;• {asset_class} Backtest: Processing {current_date.strftime('%Y-%m')} ({i-start_idx}/{len(dates)-start_idx} steps)...")
+        # 6. OPTIMIZATION: Reduce logging spam (Only print every 50 steps or 5 years)
+        if i % (rebalance_freq * 5) == 0:
+             st.write(f"&nbsp;&nbsp;&nbsp;• {asset_class} Backtest: Processing {current_date.strftime('%Y-%m')} ({i-start_idx}/{len(dates)-start_idx} steps)...")
 
         for date in pred_vals.index:
             if date in y.index:
