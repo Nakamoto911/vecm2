@@ -2113,16 +2113,18 @@ def main():
                 y_live, X_live, l1_ratio, min_persistence, estimation_window_years, horizon_months
             )
             
-            # B. Prediction Model Validation (Revised Data Simulator) - Uses Full Revised History Features
-            st.write("📊 **Generating Prediction Diagnostics (Revised Data)...**")
-            prediction_results, prediction_selection = get_historical_backtest(
-                y_live, X_live, 
-                min_train_months=240, 
-                horizon_months=horizon_months, 
-                rebalance_freq=12,
-                selection_threshold=min_persistence,
-                l1_ratio=l1_ratio
-            )
+            # B. Prediction Model Validation (Revised Data Simulator) - DEFERRED
+            # st.write("📊 **Generating Prediction Diagnostics (Revised Data)...**")
+            # prediction_results, prediction_selection = get_historical_backtest(
+            #     y_live, X_live, 
+            #     min_train_months=240, 
+            #     horizon_months=horizon_months, 
+            #     rebalance_freq=12,
+            #     selection_threshold=min_persistence,
+            #     l1_ratio=l1_ratio
+            # )
+            prediction_results = None
+            prediction_selection = None
             
             # C. Historic Backtest (DEFERRED - Lazy Loading in Tab 6)
             # st.write("⌛ **Running Unbiased PIT Backtest (Historical Vintages)...**")
@@ -2539,46 +2541,69 @@ def main():
                 st.warning(f"Displaying {len(active_series)} series. Use asset filters to focus on key drivers.")
 
     with tab4:
-        asset_to_plot = st.selectbox("Select Asset", ['EQUITY', 'BONDS', 'GOLD'], key="backtest_asset_select")
-        
-        model_display_names = {
-            'EQUITY': 'Random Forest (Non-Linear Ensemble)',
-            'BONDS': 'ElasticNetCV (Regularized Linear)',
-            'GOLD': 'Simple OLS (Linear Regression)'
-        }
-        st.info(f"Target Architecture: **{model_display_names.get(asset_to_plot)}** | Training Window: **240 Months** | Data Variant: **Revised Macro Data**")
-        
-        # Display Prediction results automatically (Revised Data)
-        # Use prediction results (Revised Data) for this tab
-        oos_results = prediction_results.get(asset_to_plot, pd.DataFrame())
-        
-        if not oos_results.empty:
-            # Align actual returns (Revised) with OOS predictions
-            actual_oos = y_live[asset_to_plot].loc[oos_results.index]
+        # LAZY LOADING CHECK
+        if prediction_results is None:
+            st.info("ℹ️ **Diagnostics Offline**: Historical validation on revised data is deferred to improve startup speed.")
             
-            # Plot
-            fig_backtest = plot_backtest(
-                actual_returns=actual_oos, 
-                predicted_returns=oos_results['predicted_return'], 
-                confidence_lower=oos_results['lower_ci'], 
-                confidence_upper=oos_results['upper_ci'],
-                confidence_level=confidence_level
-            )
-            
-            # Visual Cue: Update line style for OOS Prediction
-            for trace in fig_backtest.data:
-                if trace.name == 'Predicted':
-                    trace.name = 'OOS Prediction (Walk-Forward)'
-                    trace.line.color = '#4da6ff'
-            
-            st.plotly_chart(fig_backtest, width='stretch')
-            
-            # Stats
-            corr = actual_oos.corr(oos_results['predicted_return'])
-            rmse = np.sqrt(((actual_oos - oos_results['predicted_return'])**2).mean())
-            st.markdown(f"**OOS Correlation:** {corr:.2f} | **OOS RMSE:** {rmse:.2%}")
+            if st.button("📊 Run Prediction Model Validation", type="primary", key="load_step_b_tab4"):
+                with st.spinner("Running Walk-Forward Validation (Revised Data)..."):
+                    # Run Step B
+                    pred_res, pred_sel = get_historical_backtest(
+                        y_live, X_live, 
+                        min_train_months=240, 
+                        horizon_months=horizon_months, 
+                        rebalance_freq=12,
+                        selection_threshold=min_persistence,
+                        l1_ratio=l1_ratio
+                    )
+                    
+                    # Update & Persist
+                    st.session_state.engine_results['prediction_results'] = pred_res
+                    st.session_state.engine_results['prediction_selection'] = pred_sel
+                    save_engine_state(st.session_state.engine_results)
+                    st.rerun()
+                    
         else:
-            st.warning("Insufficient data for Walk-Forward Model Validation.")
+            asset_to_plot = st.selectbox("Select Asset", ['EQUITY', 'BONDS', 'GOLD'], key="backtest_asset_select")
+            
+            model_display_names = {
+                'EQUITY': 'Random Forest (Non-Linear Ensemble)',
+                'BONDS': 'ElasticNetCV (Regularized Linear)',
+                'GOLD': 'Simple OLS (Linear Regression)'
+            }
+            st.info(f"Target Architecture: **{model_display_names.get(asset_to_plot)}** | Training Window: **240 Months** | Data Variant: **Revised Macro Data**")
+            
+            # Display Prediction results automatically (Revised Data)
+            # Use prediction results (Revised Data) for this tab
+            oos_results = prediction_results.get(asset_to_plot, pd.DataFrame())
+            
+            if not oos_results.empty:
+                # Align actual returns (Revised) with OOS predictions
+                actual_oos = y_live[asset_to_plot].loc[oos_results.index]
+                
+                # Plot
+                fig_backtest = plot_backtest(
+                    actual_returns=actual_oos, 
+                    predicted_returns=oos_results['predicted_return'], 
+                    confidence_lower=oos_results['lower_ci'], 
+                    confidence_upper=oos_results['upper_ci'],
+                    confidence_level=confidence_level
+                )
+                
+                # Visual Cue: Update line style for OOS Prediction
+                for trace in fig_backtest.data:
+                    if trace.name == 'Predicted':
+                        trace.name = 'OOS Prediction (Walk-Forward)'
+                        trace.line.color = '#4da6ff'
+                
+                st.plotly_chart(fig_backtest, width='stretch')
+                
+                # Stats
+                corr = actual_oos.corr(oos_results['predicted_return'])
+                rmse = np.sqrt(((actual_oos - oos_results['predicted_return'])**2).mean())
+                st.markdown(f"**OOS Correlation:** {corr:.2f} | **OOS RMSE:** {rmse:.2%}")
+            else:
+                st.warning("Insufficient data for Walk-Forward Model Validation.")
 
     with tab5:
         col_d1, col_d2 = st.columns(2)
@@ -2601,27 +2626,46 @@ def main():
         
         st.divider()
         st.markdown("**Model Stability & Feature Selection Persistence**")
+
+        # LAZY LOADING CHECK
+        if prediction_selection is None:
+            st.warning("⚠️ Feature persistence history is not loaded.")
+            if st.button("📊 Run Diagnostics to View Heatmaps", key="load_step_b_tab5", type="primary"):
+                 with st.spinner("Running Walk-Forward Validation (Revised Data)..."):
+                    # Run Step B
+                    pred_res, pred_sel = get_historical_backtest(
+                        y_live, X_live, 
+                        min_train_months=240, 
+                        horizon_months=horizon_months, 
+                        rebalance_freq=12,
+                        selection_threshold=min_persistence,
+                        l1_ratio=l1_ratio
+                    )
+                    st.session_state.engine_results['prediction_results'] = pred_res
+                    st.session_state.engine_results['prediction_selection'] = pred_sel
+                    save_engine_state(st.session_state.engine_results)
+                    st.rerun()
+        else:
+            for asset in ['EQUITY', 'BONDS', 'GOLD']:
+                with st.expander(f"Diagnostics for {asset}", expanded=(asset == 'EQUITY')):
+                    if st.button(f"📊 VIEW {asset} DIAGNOSTIC DETAILS", key=f"btn_diag_{asset}"):
+                        selection_df = prediction_selection.get(asset, pd.DataFrame())
+                            
+                        if not selection_df.empty:
+                            st.markdown("### Feature Selection Persistence")
+                            st.plotly_chart(plot_feature_heatmap(selection_df, descriptions), width='stretch', key=f"heatmap_{asset}")
+                            
+                            st.divider()
+                            st.markdown("### Stability Analysis")
+                            # Stability Boxplot
+                            st.plotly_chart(plot_stability_boxplot(stability_results_map, asset, descriptions), width='stretch', key=f"boxplot_{asset}")
         
-        for asset in ['EQUITY', 'BONDS', 'GOLD']:
-            with st.expander(f"Diagnostics for {asset}", expanded=(asset == 'EQUITY')):
-                if st.button(f"📊 VIEW {asset} DIAGNOSTICS", key=f"btn_diag_{asset}"):
-                    selection_df = prediction_selection.get(asset, pd.DataFrame())
-                        
-                    if not selection_df.empty:
-                        st.markdown("### Feature Selection Persistence")
-                        st.plotly_chart(plot_feature_heatmap(selection_df, descriptions), width='stretch', key=f"heatmap_{asset}")
-                        
-                        st.divider()
-                        st.markdown("### Stability Analysis")
-                        # Stability Boxplot
-                        st.plotly_chart(plot_stability_boxplot(stability_results_map, asset, descriptions), width='stretch', key=f"boxplot_{asset}")
-    
-                        # Variable Survival Leaderboard
-                        st.plotly_chart(plot_variable_survival(stability_results_map, asset, descriptions), width='stretch', key=f"survival_{asset}")
+                            # Variable Survival Leaderboard
+                            st.plotly_chart(plot_variable_survival(stability_results_map, asset, descriptions), width='stretch', key=f"survival_{asset}")
+                        else:
+                            st.info(f"No diagnostic data available for {asset}.")
                     else:
-                        st.info(f"No diagnostic data available for {asset}.")
-                else:
-                    st.info(f"Click the button to load stability and persistence diagnostics for {asset}.")
+                        st.info(f"Click the button to load stability and persistence diagnostics for {asset}.")
         
         if st.button("Export Results Summary"):
             summary_df = pd.DataFrame(summary_data)
