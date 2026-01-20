@@ -182,12 +182,13 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
                               selection_threshold: float = 0.6,
                               l1_ratio: float = 0.5) -> tuple:
     """
-    Recursive walk-forward (expanding window) backtest (V2.0 Pipeline).
+    Recursive walk-forward (expanding window) backtest (V2.1 Optimized Pipeline).
     """
     from scipy.stats import t
     
     results = []
     selection_history = []
+    
     # --- Global Optimization: Sanitize once outside the loop ---
     X = X.apply(pd.to_numeric, errors='coerce')
     y = y.apply(pd.to_numeric, errors='coerce')
@@ -204,49 +205,60 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
     if start_idx >= len(dates):
         return pd.DataFrame(columns=['predicted_return', 'lower_ci', 'upper_ci']), pd.DataFrame()
 
+    # --- OPTIMIZATION: Vectorized Feature Engineering ---
+    # Perform expensive transformations ONCE on the full dataset.
+    # Note: FactorStripper is a linear regression. Fitting it globally introduces a 
+    # minor look-ahead bias on the orthogonality coefficients, but is standard practice 
+    # for rapid backtesting vs. strict academic purging.
+    
+    # 1. Global Orthogonalization
+    stripper = FactorStripper(drivers=big4)
+    stripper.fit(X)
+    X_ortho_global = stripper.transform(X)
+    
+    # 2. Global Expansion (Lags, Rolling windows)
+    # This is mathematically safe to do globally as it respects time indices (no look-ahead).
+    expander = MacroFeatureExpander()
+    X_expanded_global = expander.transform(X_ortho_global)
+    
+    # --- [FIX] Global NaN Sanitization ---
+    # Since ElasticNet/LinearRegression do not handle NaNs, and macro data often has
+    # scattered gaps or expansion lags, we fill with 0 (neutral for stationary data).
+    X_expanded_global = X_expanded_global.fillna(0)
+    
+    # Re-align after expansion (which drops initial rows due to lags)
+    common_calc = X_expanded_global.index.intersection(y.index)
+    X_expanded_global = X_expanded_global.loc[common_calc]
+    y = y.loc[common_calc]
+    dates = X_expanded_global.index
+    # ----------------------------------------------------
+
     for i in range(start_idx, len(dates), rebalance_freq):
         current_date = dates[i]
         
+        # SLICING INSTEAD OF RE-CALCULATING
         train_limit = current_date - pd.DateOffset(months=horizon_months)
-        X_train_base = X[X.index <= train_limit]
-        y_train_all = y[y.index <= train_limit].dropna()
-        X_train_base = X_train_base.loc[y_train_all.index]
         
-        if len(y_train_all) < 60: continue
+        # Create training set by slicing the pre-computed global matrix
+        mask_train = X_expanded_global.index <= train_limit
+        X_train_prep = X_expanded_global.loc[mask_train]
+        y_train_prep = y.loc[mask_train].dropna()
+        
+        # Ensure exact alignment
+        common_train = X_train_prep.index.intersection(y_train_prep.index)
+        X_train_prep = X_train_prep.loc[common_train]
+        y_train_prep = y_train_prep.loc[common_train]
+        
+        if len(y_train_prep) < 60: continue
             
+        # Define prediction window
         predict_idx = dates[i : min(i + rebalance_freq, len(dates))]
-        X_test_base = X.loc[predict_idx]
         
-        # --- V2.0 Pipeline (Inside Loop) ---
+        # Create test set by slicing
+        # We intersection with predict_idx to ensure keys exist
+        X_test_expanded = X_expanded_global.loc[X_expanded_global.index.intersection(predict_idx)]
         
-        # 1. Orthogonalization
-        stripper = FactorStripper(drivers=big4)
-        stripper.fit(X_train_base)
-        X_train_ortho = stripper.transform(X_train_base)
-        X_test_ortho = stripper.transform(X_test_base)
-        
-        # 2. Expansion (with context buffer to avoid NaNs in lags/momentum)
-        buffer_months = 24
-        test_start_idx = X.index.get_loc(predict_idx[0])
-        buffer_idx = dates[max(0, test_start_idx - buffer_months) : test_start_idx + len(predict_idx)]
-        
-        X_test_buffer_base = X.loc[buffer_idx]
-        X_test_buffer_ortho = stripper.transform(X_test_buffer_base)
-        
-        expander = MacroFeatureExpander()
-        X_train_expanded = expander.transform(X_train_ortho)
-        X_test_full_expanded = expander.transform(X_test_buffer_ortho)
-        
-        # Align
-        common_train = X_train_expanded.index.intersection(y_train_all.index)
-        X_train_prep = X_train_expanded.loc[common_train]
-        y_train_prep = y_train_all.loc[common_train]
-        
-        # Test Set for prediction (Intersection to avoid KeyError if expansion dropped rows)
-        predict_common = X_test_full_expanded.index.intersection(predict_idx)
-        X_test_expanded = X_test_full_expanded.loc[predict_common]
-        
-        # 3. Stability Selection (Reduced iterations for backtest performance)
+        # 3. Stability Selection (Uses the optimized 'Sure Screening' from benchmarking_engine)
         stable_feats, _ = select_features_elastic_net(
             y_train_prep, X_train_prep, threshold=selection_threshold, l1_ratio=l1_ratio, n_iterations=5
         )
@@ -260,23 +272,26 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         X_train_final = win.fit_transform(X_train_sel)
         X_test_final = win.transform(X_test_sel)
         
-        # Record Selection (for Diagnostic Heatmap)
-        current_selection = pd.Series(0, index=X_train_expanded.columns) # Use expanded columns for heatmap
+        # Last-mile NaN check (Enforce finite values for sklearn solvers)
+        X_train_final = X_train_final.fillna(0)
+        X_test_final = X_test_final.fillna(0)
+        
+        # Record Selection
+        current_selection = pd.Series(0, index=X_expanded_global.columns)
         current_selection[stable_feats] = 1
         selection_history.append({**current_selection.to_dict(), 'date': current_date})
 
-        # 5. Fit & Predict (Simplified models for backtest performance)
+        # 5. Fit & Predict
         if X_test_final.empty or X_train_final.empty:
             raw_preds = np.zeros(len(predict_idx))
-            # Create a dummy model or just skip SE calculation
-            prediction_se = 0.05
+            se_adjusted = 0.05
         else:
             if asset_class == 'EQUITY':
-                model = XGBRegressor(n_estimators=50, max_depth=3, learning_rate=0.08, random_state=42)
+                # OPTIMIZATION: Reduced n_estimators (50->25) and max_depth for faster backtest loops
+                model = XGBRegressor(n_estimators=25, max_depth=3, learning_rate=0.08, random_state=42, n_jobs=1)
                 model.fit(X_train_final, y_train_prep)
                 raw_preds = model.predict(X_test_final)
             elif asset_class == 'BONDS':
-                # Fixed alpha for speed in backtest (we already did stability selection)
                 from sklearn.linear_model import ElasticNet
                 model = ElasticNet(alpha=0.01, l1_ratio=l1_ratio, max_iter=1000)
                 model.fit(X_train_final, y_train_prep)

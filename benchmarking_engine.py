@@ -174,19 +174,33 @@ def select_features_elastic_net(y: pd.Series, X: pd.DataFrame,
                                  l1_ratio: float = 0.5,
                                  st_progress=None) -> tuple:
     """
-    Implement Stability Selection via bootstrapping.
+    Implement Stability Selection via bootstrapping with Unvariate Screening optimization.
     """
     from sklearn.linear_model import ElasticNet
+    from sklearn.preprocessing import StandardScaler
     
     # Pre-clean
     X = X.dropna(axis=1)
     if X.empty:
         return [], pd.Series(dtype=float)
 
+    # --- OPTIMIZATION: Univariate Screening (Sure Independence Screening) ---
+    # If feature space is large (>100), filter to top 100 by simple correlation first.
+    # This reduces the dimensionality for the iterative solver significantly.
+    if X.shape[1] > 100:
+        # Calculate absolute correlation with target
+        # Handle potential constant columns that result in NaN correlation
+        corrs = X.corrwith(y).abs().fillna(0)
+        top_cols = corrs.sort_values(ascending=False).head(100).index.tolist()
+        X_screened = X[top_cols]
+    else:
+        X_screened = X
+    # -----------------------------------------------------------------------
+
     scaler = StandardScaler()
-    X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=X.columns, index=X.index)
+    X_scaled = pd.DataFrame(scaler.fit_transform(X_screened), columns=X_screened.columns, index=X_screened.index)
     
-    selection_counts = pd.Series(0, index=X.columns)
+    selection_counts = pd.Series(0, index=X_screened.columns)
     
     progress_container = None
     if st_progress:
