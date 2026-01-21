@@ -51,6 +51,7 @@ def main():
         st.markdown("---")
         if st.button("🔄 Clean Cache & Re-Sync", width='stretch'):
             if os.path.exists('engine_state.pkl'): os.remove('engine_state.pkl')
+            if os.path.exists('pit_macro_cache.pkl'): os.remove('pit_macro_cache.pkl')
             st.session_state.sync_triggered = False; st.session_state.engine_results = None
             st.cache_data.clear(); st.rerun()
         

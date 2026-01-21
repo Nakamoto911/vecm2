@@ -3,6 +3,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression, HuberRegressor, ElasticNetCV, ElasticNet
 import statsmodels.api as sm
 from statsmodels.regression.rolling import RollingOLS
+from joblib import Parallel, delayed
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.dummy import DummyRegressor
 from sklearn.metrics import mean_squared_error
@@ -175,6 +176,28 @@ class FactorStripper(BaseEstimator, TransformerMixin):
             return combined.loc[:, ~combined.columns.duplicated()]
         return X_df
 
+def _perform_pit_ortho_feature(col, drv, X_col, X_drv, min_history):
+    """Helper for parallelizing PIT Ortho feature-by-feature."""
+    import statsmodels.api as sm
+    from statsmodels.regression.rolling import RollingOLS
+    
+    dates = X_col.index
+    n = len(dates)
+    exog = sm.add_constant(X_drv)
+    endog = X_col
+    
+    rols = RollingOLS(endog=endog, exog=exog, window=n, min_nobs=min_history, expanding=True)
+    rres = rols.fit()
+    
+    params_pit = rres.params.shift(1)
+    predicted = params_pit['const'] + params_pit[drv] * X_drv
+    resid = X_col - predicted
+    
+    latest_params = rres.params.iloc[-1]
+    coef_info = (latest_params[drv], latest_params['const'])
+    
+    return col, drv, resid, coef_info
+
 
 class PointInTimeFactorStripper(BaseEstimator, TransformerMixin):
     """
@@ -195,15 +218,14 @@ class PointInTimeFactorStripper(BaseEstimator, TransformerMixin):
         self.min_history = min_history
         self.update_frequency = update_frequency
         self.coefficient_history_ = {}  # date -> {driver -> {feature -> coef}}
-        
+
     def fit_transform_pit(self, X: pd.DataFrame, progress_cb=None) -> pd.DataFrame:
         """
         Vectorized Point-in-time fit and transform using RollingOLS.
-        Eliminates slow looping over time steps.
+        Parallelized across features for each driver.
         """
         X = X.sort_index()
         dates = X.index
-        n = len(dates)
         
         available_drivers = [d for d in self.drivers if d in X.columns]
         if not available_drivers:
@@ -213,42 +235,31 @@ class PointInTimeFactorStripper(BaseEstimator, TransformerMixin):
         resid_df = pd.DataFrame(index=dates)
         
         for drv in available_drivers:
-            # Exog is the driver plus a constant
-            exog = sm.add_constant(X[drv])
+            X_drv = X[drv]
             
-            for col in feature_cols:
-                # Endog is the feature to be orthogonalized
-                endog = X[col]
+            # Parallel loop over features
+            total_feats = len(feature_cols)
+            ortho_gen = Parallel(n_jobs=-1, prefer="threads", return_as="generator")(
+                delayed(_perform_pit_ortho_feature)(col, drv, X[col], X_drv, self.min_history)
+                for col in feature_cols
+            )
+            
+            for i, (col, d, resid, coef_info) in enumerate(ortho_gen):
+                resid_df[f"{col}_resid_{d}"] = resid
                 
-                # We use Expanding Window: window=len(X), min_nobs=self.min_history
-                # RollingOLS is highly optimized in Cython
-                rols = RollingOLS(endog=endog, exog=exog, window=n, min_nobs=self.min_history, expanding=True)
-                rres = rols.fit()
+                # Store latest coefficients
+                last_date = dates[-1]
+                if last_date not in self.coefficient_history_:
+                    self.coefficient_history_[last_date] = {}
+                if d not in self.coefficient_history_[last_date]:
+                    self.coefficient_history_[last_date][d] = {}
+                self.coefficient_history_[last_date][d][col] = coef_info
                 
-                # Get params (intercept and driver coef)
-                # params has columns ['const', drv]
-                # We need params available at t-1 to apply at t (Point-In-Time)
-                # So we shift by 1
-                params_pit = rres.params.shift(1)
-                
-                # Calculate predicted: const + coef * driver
-                # Note: X[drv] and params_pit[drv] are aligned on index
-                predicted = params_pit['const'] + params_pit[drv] * X[drv]
-                
-                # Residue: Actual - Predicted
-                resid_df[f"{col}_resid_{drv}"] = X[col] - predicted
-                
-                # Store latest coefficients for future transform calls
-                if dates[-1] not in self.coefficient_history_:
-                    self.coefficient_history_[dates[-1]] = {}
-                if drv not in self.coefficient_history_[dates[-1]]:
-                    self.coefficient_history_[dates[-1]][drv] = {}
-                
-                latest_params = rres.params.iloc[-1]
-                self.coefficient_history_[dates[-1]][drv][col] = (latest_params[drv], latest_params['const'])
-                
-            if progress_cb:
-                progress_cb(available_drivers.index(drv) / len(available_drivers), dates[-1])
+                if progress_cb and (i % 5 == 0 or i == total_feats - 1):
+                    drv_idx = available_drivers.index(drv)
+                    inner_pct = (i + 1) / total_feats
+                    total_pct = (drv_idx + inner_pct) / len(available_drivers)
+                    progress_cb(total_pct, last_date, f"PIT Ortho: {drv} ({i+1}/{total_feats})")
         
         # Combine with original
         combined = pd.concat([X, resid_df], axis=1)

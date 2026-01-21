@@ -9,6 +9,9 @@ from sklearn.model_selection import TimeSeriesSplit
 from scipy.stats import t as t_dist
 from xgboost import XGBRegressor
 import time
+import threading
+import os
+from streamlit.runtime.scriptrunner_utils.script_run_context import add_script_run_ctx
 from joblib import Parallel, delayed
 
 from benchmarking_engine import (
@@ -188,7 +191,8 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
     if X_precomputed is not None:
         X_expanded_global = X_precomputed
     else:
-        pit_stripper = PointInTimeFactorStripper(drivers=['CPIAUCSL', 'INDPRO', 'M2SL', 'FEDFUNDS'], min_history=60)
+        # Fallback if precomputed data is not provided
+        pit_stripper = PointInTimeFactorStripper(drivers=['CPIAUCSL', 'INDPRO', 'M2SL', 'FEDFUNDS'], min_history=60, update_frequency=12)
         X_ortho = pit_stripper.fit_transform_pit(X)
         expander = MacroFeatureExpander()
         X_expanded_global = expander.transform(X_ortho).astype('float32').fillna(0)
@@ -225,13 +229,18 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         })
 
     # 2. Parallel Feature Selection
-    # Run heavy selection tasks in parallel
-    if progress_cb: progress_cb(0.1, dates[steps[0]])
-    
-    sel_results = Parallel(n_jobs=-1, prefer="threads")(
+    # Run heavy selection tasks in parallel with incremental reporting
+    total_sel = len(selection_dates)
+    sel_gen = Parallel(n_jobs=-1, prefer="threads", return_as="generator")(
         delayed(_perform_feature_selection_step)(d, y, X_expanded_global, horizon_months, asset_class)
         for d in selection_dates
     )
+    
+    sel_results = []
+    for i, res in enumerate(sel_gen):
+        sel_results.append(res)
+        if progress_cb:
+            progress_cb(0.1 + (i+1)/total_sel * 0.4, res[0], f"Feature Selection ({i+1}/{total_sel})")
     
     # Map results for O(1) lookup
     feature_cache = {
@@ -244,9 +253,8 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         selection_history.append({'selected': feature_cache[d]['features'], 'date': d})
 
     # 3. Parallel Prediction
-    if progress_cb: progress_cb(0.5, dates[steps[len(steps)//2]])
-    
-    pred_results = Parallel(n_jobs=-1, prefer="threads")(
+    total_pred = len(step_map)
+    pred_gen = Parallel(n_jobs=-1, prefer="threads", return_as="generator")(
         delayed(_perform_prediction_step)(
             step['current_date'], 
             step['predict_idx'],
@@ -258,9 +266,15 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         )
         for step in step_map
     )
+    
+    pred_results = []
+    for i, res in enumerate(pred_gen):
+        pred_results.append(res)
+        if progress_cb:
+            progress_cb(0.5 + (i+1)/total_pred * 0.4, res[0], f"Prediction Engine ({i+1}/{total_pred})")
 
     # 4. Aggregate Results
-    if progress_cb: progress_cb(0.9, dates[-1])
+    if progress_cb: progress_cb(0.9, dates[-1], "Finalizing Results")
     
     for _, idxs, raw_preds, l_ci, u_ci in pred_results:
         pred_vals = pd.Series(raw_preds, index=idxs)
@@ -416,34 +430,80 @@ def compute_allocation(expected_returns: dict, regime_status: str, risk_free_rat
     total = sum(weights.values())
     return {k: v / total for k, v in weights.items()}
 
+PIT_CACHE_PATH = 'pit_macro_cache.pkl'
 MANUAL_MACRO_CACHE = {}
 def get_precomputed_macro_data(X: pd.DataFrame, drivers: list, min_history: int = 60, progress_cb=None):
+    """
+    PIT Macro Caching Logic:
+    1. Check if cache exists on disk.
+    2. Verify integrity (index match).
+    3. Load or compute & save to disk.
+    """
+    # memory cache check
     cache_key = hash(tuple(X.index))
-    if cache_key in MANUAL_MACRO_CACHE: return MANUAL_MACRO_CACHE[cache_key]
+    if cache_key in MANUAL_MACRO_CACHE: 
+        return MANUAL_MACRO_CACHE[cache_key]
+    
+    # disk cache check
+    if os.path.exists(PIT_CACHE_PATH):
+        try:
+            cached_df = pd.read_pickle(PIT_CACHE_PATH)
+            if cached_df.index.equals(X.index):
+                MANUAL_MACRO_CACHE[cache_key] = cached_df
+                return cached_df
+        except Exception:
+            pass # Invalidate on load error/corruption
+
+    # Recompute
     pit_stripper = PointInTimeFactorStripper(drivers=drivers, min_history=min_history, update_frequency=12)
     X_ortho = pit_stripper.fit_transform_pit(X, progress_cb=progress_cb)
     X_expanded = MacroFeatureExpander().transform(X_ortho).astype('float32').fillna(0)
+    
+    # Persist
+    X_expanded.to_pickle(PIT_CACHE_PATH)
     MANUAL_MACRO_CACHE[cache_key] = X_expanded
     return X_expanded
 
 def get_historical_backtest(y, X, min_train_months, horizon_months, rebalance_freq, selection_threshold, l1_ratio, confidence_level=0.90):
     results, heatmaps, coverage = {}, {}, {}
     start_time = time.time()
+    
     with st.status("🚀 Engine Processing...", expanded=True) as status:
-        status_msg, progress_bar = st.empty(), st.progress(0)
-        def update_pit_progress(pct, current_date):
-            progress_bar.progress(min(0.15, 0.05 + pct * 0.10))
-            elapsed = time.time() - start_time
-            status_msg.markdown(f"**Step 1/4**: PIT Ortho | {current_date.strftime('%Y')} | {int(elapsed)}s")
-        X_precomputed = get_precomputed_macro_data(X, ['CPIAUCSL', 'INDPRO', 'M2SL', 'FEDFUNDS'], min_history=60, progress_cb=update_pit_progress)
-        for a_idx, asset in enumerate(['EQUITY', 'BONDS', 'GOLD']):
-            def update_progress(pct_inner, current_date):
-                progress_bar.progress(min(0.99, 0.15 + (a_idx + pct_inner) / 3 * 0.85))
-                elapsed = time.time() - start_time
-                status_msg.markdown(f"**Step {a_idx+2}/4**: {asset} | {current_date.strftime('%b %Y')} | {int(elapsed)}s")
-            oos_df, sel_df, coverage_stats = run_walk_forward_backtest(y[asset], X, min_train_months, horizon_months, rebalance_freq, asset, selection_threshold, l1_ratio, confidence_level, update_progress, X_precomputed)
-            results[asset], heatmaps[asset], coverage[asset] = oos_df, sel_df, coverage_stats
-        status.update(label="✅ Complete", state="complete", expanded=False)
+        status_msg, timer_msg, progress_bar = st.empty(), st.empty(), st.progress(0)
+        
+        # Live timer thread for visual responsiveness
+        stop_timer = threading.Event()
+        def timer_thread():
+            while not stop_timer.is_set():
+                elapsed = int(time.time() - start_time)
+                mins, secs = divmod(elapsed, 60)
+                timer_msg.markdown(f"⏱️ **Elapsed Time**: `{mins:02d}:{secs:02d}`")
+                time.sleep(1)
+        
+        t = threading.Thread(target=timer_thread, daemon=True)
+        add_script_run_ctx(t)
+        t.start()
+        
+        try:
+            def update_pit_progress(pct, current_date, step_name="PIT Ortho"):
+                progress_bar.progress(min(0.15, 0.05 + pct * 0.10))
+                status_msg.markdown(f"**Step 1/4**: {step_name} | {current_date.strftime('%Y')}")
+
+            X_precomputed = get_precomputed_macro_data(X, ['CPIAUCSL', 'INDPRO', 'M2SL', 'FEDFUNDS'], min_history=60, progress_cb=update_pit_progress)
+            
+            for a_idx, asset in enumerate(['EQUITY', 'BONDS', 'GOLD']):
+                def update_progress(pct_inner, current_date, step_name="Processing"):
+                    progress_bar.progress(min(0.99, 0.15 + (a_idx + pct_inner) / 3 * 0.85))
+                    status_msg.markdown(f"**Step {a_idx+2}/4**: {asset} | {step_name} | {current_date.strftime('%b %Y')}")
+                
+                oos_df, sel_df, coverage_stats = run_walk_forward_backtest(y[asset], X, min_train_months, horizon_months, rebalance_freq, asset, selection_threshold, l1_ratio, confidence_level, update_progress, X_precomputed)
+                results[asset], heatmaps[asset], coverage[asset] = oos_df, sel_df, coverage_stats
+                
+            status.update(label="✅ Complete", state="complete", expanded=False)
+        finally:
+            stop_timer.set()
+            t.join(timeout=2)
+            
     return results, heatmaps, coverage
 
 def get_live_model_signals_v4(y, X, l1_ratio, selection_threshold, window_years, horizon_months, confidence_level=0.90):
