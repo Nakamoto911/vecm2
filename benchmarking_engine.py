@@ -222,38 +222,39 @@ class PointInTimeFactorStripper(BaseEstimator, TransformerMixin):
         driver_indices = [X.columns.get_loc(d) for d in available_drivers]
         feature_indices = [X.columns.get_loc(f) for f in feature_cols]
         
-        for t_idx in range(self.min_history, n):
-            # Check if we need to update coefficients
-            if t_idx - last_update_idx >= self.update_frequency:
-                if t_idx % 60 == 0: # Log every 5 years in terminal
-                    print(f"DEBUG: PIT Orthogonalization Progress: {t_idx}/{n} steps")
-                # Fit on data [0, t_idx - 1] (strictly historical)
-                X_train = X.iloc[:t_idx]
-                current_coefficients = self._fit_coefficients(X_train, available_drivers)
-                last_update_idx = t_idx
-                
-                # Store for diagnostics/reproducibility
-                self.coefficient_history_[dates[t_idx]] = current_coefficients.copy()
+        for t_idx in range(self.min_history, n, self.update_frequency):
+            # 1. Update coefficients (Fit on data [0, t_idx - 1])
+            if t_idx % 60 <= self.update_frequency: # Log roughly every 5 years
+                print(f"DEBUG: PIT Orthogonalization Progress: {t_idx}/{n} steps")
             
-            # Apply current coefficients to transform X_t using pre-extracted values
+            X_train = X.iloc[:t_idx]
+            current_coefficients = self._fit_coefficients(X_train, available_drivers)
+            self.coefficient_history_[dates[t_idx]] = current_coefficients.copy()
+            
+            # 2. Apply current coefficients to the NEXT block of data [t_idx, t_idx + update_frequency - 1]
+            end_idx = min(t_idx + self.update_frequency, n)
+            block_slice = slice(t_idx, end_idx)
+            
             col_idx = 0
             for f_idx in feature_indices:
                 feat_name = feature_cols[feature_indices.index(f_idx)]
-                actual_val = X_values[t_idx, f_idx]
+                actual_vals = X_values[block_slice, f_idx]
                 
                 for d_idx in driver_indices:
                     drv_name = available_drivers[driver_indices.index(d_idx)]
+                    
                     if drv_name in current_coefficients and feat_name in current_coefficients[drv_name]:
                         coef, intercept = current_coefficients[drv_name][feat_name]
-                        driver_val = X_values[t_idx, d_idx]
+                        driver_vals_block = X_values[block_slice, d_idx]
                         
-                        if not np.isnan(driver_val) and not np.isnan(actual_val):
-                            predicted = coef * driver_val + intercept
-                            result_data[t_idx, col_idx] = actual_val - predicted
+                        # Vectorized application
+                        predicted = coef * driver_vals_block + intercept
+                        result_data[block_slice, col_idx] = actual_vals - predicted
+                        
                     col_idx += 1
             
             # Progress reporting
-            if progress_cb and t_idx % 12 == 0:
+            if progress_cb:
                 progress_cb(t_idx / n, dates[t_idx])
         
         # Construct result DataFrame
@@ -264,34 +265,40 @@ class PointInTimeFactorStripper(BaseEstimator, TransformerMixin):
         return combined.loc[:, ~combined.columns.duplicated()]
     
     def _fit_coefficients(self, X_train: pd.DataFrame, drivers: list) -> dict:
-        """Fit orthogonalization coefficients on training data."""
+        """Fit orthogonalization coefficients on training data using optimized numpy operations."""
         coefficients = {}
+        
+        # Pre-extract data to avoid repeated DataFrame access
+        feature_cols = [c for c in X_train.columns if c not in drivers]
+        driver_vals = {d: X_train[d].values for d in drivers}
+        feature_vals = {f: X_train[f].values for f in feature_cols}
         
         for driver in drivers:
             coefficients[driver] = {}
-            driver_data = X_train[driver].dropna()
+            x_raw = driver_vals[driver]
             
-            if len(driver_data) < 24:
+            # Mask for valid driver data
+            mask_x = ~np.isnan(x_raw)
+            if np.sum(mask_x) < 24:
                 continue
             
-            for col in X_train.columns:
-                if col == driver or col in drivers:
+            for col in feature_cols:
+                y_raw = feature_vals[col]
+                
+                # Pairwise complete observations using bitwise & for performance
+                mask_joint = mask_x & (~np.isnan(y_raw))
+                if np.sum(mask_joint) < 24:
                     continue
                 
-                # Pairwise complete observations
-                pair = X_train[[driver, col]].dropna()
-                if len(pair) < 24:
-                    continue
+                x = x_raw[mask_joint]
+                y = y_raw[mask_joint]
                 
-                # Simple linear regression
-                x = pair[driver].values
-                y = pair[col].values
-                
-                # Closed-form OLS
+                # Closed-form OLS (already optimized)
                 x_mean = x.mean()
                 y_mean = y.mean()
-                numer = np.sum((x - x_mean) * (y - y_mean))
-                denom = np.sum((x - x_mean)**2)
+                x_centered = x - x_mean
+                numer = np.sum(x_centered * (y - y_mean))
+                denom = np.sum(x_centered**2)
                 coef = numer / (denom + 1e-10)
                 intercept = y_mean - coef * x_mean
                 
