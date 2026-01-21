@@ -145,8 +145,26 @@ def plot_feature_heatmap(selection_history: pd.DataFrame, descriptions: dict) ->
                 row[feat] = 1
             rows.append(row)
         df_plot = pd.DataFrame(rows).fillna(0).set_index('date').T
+    elif isinstance(selection_history, pd.DataFrame):
+        if selection_history.empty: return go.Figure()
+        if 'selected' in selection_history.columns:
+            # Compact format: date index, 'selected' column containing lists
+            rows = []
+            for date, row in selection_history.iterrows():
+                r = {'date': date}
+                selected_cols = row['selected']
+                if isinstance(selected_cols, list):
+                    for feat in selected_cols:
+                        r[feat] = 1
+                rows.append(r)
+            df_plot = pd.DataFrame(rows).fillna(0).set_index('date').T
+        else:
+            # Assume Matrix format: features as columns, dates as index
+            df_plot = selection_history.T
+            # Ensure all values are numeric
+            df_plot = df_plot.apply(pd.to_numeric, errors='coerce').fillna(0)
     else:
-        df_plot = selection_history.T
+        return go.Figure()
     
     avg_probs = df_plot.mean(axis=1).sort_values(ascending=True)
     df_plot = df_plot.loc[avg_probs.index]
@@ -344,21 +362,32 @@ def plot_combined_driver_analysis(feat_data: pd.DataFrame, asset_returns: pd.Dat
 
 def plot_variable_survival(stability_results_map: dict, asset: str, descriptions: dict = None) -> go.Figure:
     theme = create_theme()
-    if asset not in stability_results_map: return go.Figure().update_layout(title="No stability data available", **theme)
+    if asset not in stability_results_map: 
+        return go.Figure().update_layout(title="No stability data available", paper_bgcolor=theme['paper_bgcolor'], plot_bgcolor=theme['plot_bgcolor'], font=theme['font'])
     if isinstance(stability_results_map.get(asset), pd.DataFrame): coef_df = stability_results_map[asset]
     else: coef_df = stability_results_map[asset].get('all_coefficients', pd.DataFrame())
-    if coef_df.empty: return go.Figure().update_layout(title="No selection history available", **theme)
+    if coef_df.empty: 
+        return go.Figure().update_layout(title="No selection history available", paper_bgcolor=theme['paper_bgcolor'], plot_bgcolor=theme['plot_bgcolor'], font=theme['font'])
     feature_cols = [c for c in coef_df.columns if c != 'const']
     counts = (coef_df[feature_cols].fillna(0) != 0).sum().sort_values(ascending=True)
     counts = counts[counts > 0]
     if counts.empty: return go.Figure().update_layout(title="No drivers survived the stability test", **theme)
     labels = [f"<b>{feat}</b><br><span style='font-size:9px; color:{theme['text_muted']};'>{descriptions.get(feat.split('_')[0], feat) if descriptions else feat}</span>" for feat in counts.index]
     fig = go.Figure(go.Bar(x=counts.values, y=labels, orientation='h', marker=dict(color=counts.values, colorscale='Oranges', line=dict(color=theme['paper_bgcolor'], width=1)), text=counts.values, textposition='auto'))
-    layout_args = theme.copy()
-    layout_args.update({'title': dict(text=f"VARIABLE SURVIVAL LEADERBOARD - {asset}", font=dict(size=14, color='#ff6b35')), 'xaxis_title': "Number of Windows Selected", 'margin': dict(l=20, r=20, t=60, b=40), 'height': 400 + (len(counts) * 15)})
-    if 'yaxis' in layout_args: layout_args['yaxis'] = {**layout_args['yaxis'], 'showgrid': False}
-    else: layout_args['yaxis'] = dict(showgrid=False)
-    fig.update_layout(**layout_args)
+    
+    # Clean layout args to only include Plotly Layout properties
+    layout_props = {
+        'title': dict(text=f"VARIABLE SURVIVAL LEADERBOARD - {asset}", font=dict(size=14, color='#ff6b35')),
+        'xaxis_title': "Number of Windows Selected",
+        'margin': dict(l=20, r=20, t=60, b=40),
+        'height': 400 + (len(counts) * 15),
+        'paper_bgcolor': theme['paper_bgcolor'],
+        'plot_bgcolor': theme['plot_bgcolor'],
+        'font': theme['font'],
+        'xaxis': {**theme['xaxis'], 'title': "Number of Windows Selected"},
+        'yaxis': {**theme['yaxis'], 'showgrid': False}
+    }
+    fig.update_layout(**layout_props)
     return fig
 
 def plot_backtest(actual_returns: pd.Series, predicted_returns: pd.Series, confidence_lower: pd.Series, confidence_upper: pd.Series, confidence_level: float = 0.90) -> go.Figure:
@@ -371,5 +400,16 @@ def plot_backtest(actual_returns: pd.Series, predicted_returns: pd.Series, confi
     fig.add_trace(go.Scatter(x=predicted_returns.index, y=[hover_y] * len(predicted_returns), yaxis='y2', name='Pred', mode='markers', marker=dict(size=0, opacity=0), showlegend=False, hovertemplate="<b>Pred</b>: %{customdata:.1%}<extra></extra>", customdata=predicted_returns))
     fig.add_trace(go.Scatter(x=actual_returns.index, y=[hover_y] * len(actual_returns), yaxis='y2', name='Act', mode='markers', marker=dict(size=0, opacity=0), showlegend=False, hovertemplate="<b>Act</b>: %{customdata:.1%}<extra></extra>", customdata=actual_returns))
     theme = create_theme()
-    fig.update_layout(paper_bgcolor=theme['paper_bgcolor'], plot_bgcolor=theme['plot_bgcolor'], margin=dict(l=50, r=20, t=30, b=40), height=350, hovermode='x', hoverlabel=dict(bgcolor='rgba(0,0,0,0.6)' if st.session_state.theme == 'dark' else 'rgba(255,255,255,0.8)', font=dict(family='IBM Plex Mono', size=11, color=theme['font']['color'])), xaxis=dict(gridcolor=theme['gridcolor'], showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dash', spikethickness=1, spikecolor=theme['text_muted'], tickfont=dict(color=theme['label_color'])), yaxis=dict(gridcolor=theme['gridcolor'], title=dict(text='Annualized Return', font=dict(color=theme['label_color'])), tickfont=dict(color=theme['label_color'])), yaxis2=dict(range=[0, 1], overlaying='y', visible=False, fixedrange=True), legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0))
+    fig.update_layout(
+        paper_bgcolor=theme['paper_bgcolor'], 
+        plot_bgcolor=theme['plot_bgcolor'], 
+        margin=dict(l=50, r=20, t=30, b=40), 
+        height=350, 
+        hovermode='x', 
+        hoverlabel=dict(bgcolor='rgba(0,0,0,0.6)' if st.session_state.theme == 'dark' else 'rgba(255,255,255,0.8)', font=dict(family='IBM Plex Mono', size=11, color=theme['font']['color'])), 
+        xaxis=dict(**theme['xaxis'], showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dash', spikethickness=1, spikecolor=theme['text_muted']), 
+        yaxis=dict(**theme['yaxis'], title=dict(text='Annualized Return', font=dict(color=theme['label_color']))), 
+        yaxis2=dict(range=[0, 1], overlaying='y', visible=False, fixedrange=True), 
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0)
+    )
     return fig

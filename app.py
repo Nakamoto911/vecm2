@@ -21,9 +21,11 @@ from app_utils import (
     load_full_fred_md_raw, load_fred_appendix, create_theme
 )
 from data_utils import (
-    load_fred_md_data, load_asset_data, prepare_macro_features, compute_forward_returns
+    load_fred_md_data, load_asset_data, prepare_macro_features, compute_forward_returns,
+    load_precomputed_features
 )
 from models import get_live_model_signals_v4, evaluate_regime, compute_allocation
+from models_optimized import run_all_assets_backtest, BacktestConfig
 from ui_components import (
     render_custom_css, render_allocation_tab, render_drivers_tab,
     render_series_tab, render_prediction_tab, render_diagnostics_tab,
@@ -82,17 +84,20 @@ def main():
         st.error("Failed to load required data.")
         return
     
-    X_current = prepare_macro_features(macro_data_current)
+    # Optimized Data Path: Use Precomputed Features
+    X_precomputed = load_precomputed_features()
+    if X_precomputed is None:
+        st.error("Run `python precompute_pit.py` first")
+        st.stop()
+    
     y_forward = compute_forward_returns(asset_prices, horizon_months=horizon_months)
-    valid_idx = X_current.index.intersection(y_forward.index)
-    X_live, y_live = X_current.loc[valid_idx], y_forward.loc[valid_idx]
-
-    # PIT Data for Backtest
-    PIT_FILE = 'PIT_Macro_Features.csv'
-    X_pit = pd.read_csv(PIT_FILE, index_col=0, parse_dates=True) if os.path.exists(PIT_FILE) else X_current.copy()
-    X_pit.index = X_pit.index + pd.offsets.MonthEnd(0)
-    valid_idx_pit = X_pit.index.intersection(y_forward.index)
-    X_backtest, y_backtest = X_pit.loc[valid_idx_pit], y_forward.loc[valid_idx_pit]
+    
+    # Align for live prediction & backtest
+    valid_idx = X_precomputed.index.intersection(y_forward.index)
+    X_live, y_live = X_precomputed.loc[valid_idx], y_forward.loc[valid_idx]
+    
+    # Legacy compatibility for Lab tab
+    X_backtest, y_backtest = X_live, y_live
     
     if not st.session_state.sync_triggered:
         st.warning("ALPHA ENGINE OFFLINE. Synchronize to generate insights.")
@@ -101,16 +106,28 @@ def main():
         return
 
     if st.session_state.engine_results is None:
-        expected_returns, confidence_intervals, driver_attributions, stability_results_map, model_stats = get_live_model_signals_v4(
-            y_live, X_live, l1_ratio, min_persistence, est_window, horizon_months, confidence_level=confidence_level
-        )
-        st.session_state.engine_results = {
-            'expected_returns': expected_returns, 'confidence_intervals': confidence_intervals,
-            'driver_attributions': driver_attributions, 'stability_results_map': stability_results_map,
-            'model_stats': model_stats, 'prediction_results': None, 'prediction_selection': None,
-            'backtest_results': None, 'backtest_selection': None, 'coverage_stats': {}
-        }
-        save_engine_state(st.session_state.engine_results)
+        with st.status("🚀 Running Optimized Alpha Engine...", expanded=True) as status:
+            st.write("Generating live signals...")
+            expected_returns, confidence_intervals, driver_attributions, stability_results_map, model_stats = get_live_model_signals_v4(
+                y_live, X_live, l1_ratio, min_persistence, est_window, horizon_months, confidence_level=confidence_level
+            )
+            
+            st.write("Executing optimized backtest...")
+            config = BacktestConfig(min_train_months=240, horizon_months=horizon_months)
+            results, selections, coverage = run_all_assets_backtest(y_forward, X_precomputed, config)
+            
+            st.session_state.engine_results = {
+                'expected_returns': expected_returns, 'confidence_intervals': confidence_intervals,
+                'driver_attributions': driver_attributions, 'stability_results_map': stability_results_map,
+                'model_stats': model_stats, 
+                'prediction_results': results, 
+                'prediction_selection': selections, 
+                'coverage_stats': coverage,
+                'backtest_results': results, 
+                'backtest_selection': selections
+            }
+            save_engine_state(st.session_state.engine_results)
+            status.update(label="✅ Engine Core & Backtest Ready!", state="complete")
 
     # Unpack State
     res = st.session_state.engine_results
