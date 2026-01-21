@@ -328,12 +328,11 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         X_train_final = X_train_final.fillna(0)
         X_test_final = X_test_final.fillna(0)
         
-        # Record Selection
-        current_selection = pd.Series(0, index=X_expanded_global.columns)
-        current_selection[stable_feats] = 1
-        selection_history.append({**current_selection.to_dict(), 'date': current_date})
-
         # 5. Fit & Predict
+        # Record Selection (Optimized for storage: store only the list of selected features)
+        selection_history.append({'selected': stable_feats, 'date': current_date})
+
+
         if X_test_final.empty or X_train_final.empty:
             raw_preds = np.zeros(len(predict_idx))
             se_adjusted = 0.05
@@ -977,13 +976,24 @@ def plot_feature_heatmap(selection_history: pd.DataFrame, descriptions: dict) ->
     """
     Visualize stability selection probabilities over time.
     """
-    if selection_history.empty:
+    if selection_history is None or (isinstance(selection_history, pd.DataFrame) and selection_history.empty) or (isinstance(selection_history, list) and not selection_history):
         return go.Figure()
         
     theme = create_theme()
     
-    # Transpose so variables are on Y-axis and time on X-axis
-    df_plot = selection_history.T
+    # Handle Optimized Sparse Format (List of dicts with 'selected' and 'date')
+    if isinstance(selection_history, list):
+        rows = []
+        for entry in selection_history:
+            # Reconstruct sparse row
+            row = {'date': entry['date']}
+            for feat in entry.get('selected', []):
+                row[feat] = 1
+            rows.append(row)
+        df_plot = pd.DataFrame(rows).fillna(0).set_index('date').T
+    else:
+        # Backward compatibility for old dense DataFrame format
+        df_plot = selection_history.T
     
     # Sort Y-axis by average probability to put most stable on top
     avg_probs = df_plot.mean(axis=1).sort_values(ascending=True)
