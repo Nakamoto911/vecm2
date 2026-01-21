@@ -11,11 +11,12 @@ from viz_utils import (
     plot_feature_heatmap, plot_stability_boxplot, plot_trend_bars,
     plot_driver_vs_asset, plot_driver_scatter, plot_rolling_correlation,
     plot_quintile_analysis, plot_combined_driver_analysis,
-    plot_variable_survival, plot_backtest
+    plot_variable_survival, plot_backtest, plot_rolling_correlation as plot_rolling_ic_chart
 )
 from models import get_historical_backtest, get_historical_stress
 from data_utils import apply_transformation
 from backtester import StrategyBacktester
+from prediction_metrics import compute_all_metrics, get_quality_rating, format_metric_value, compute_rolling_ic, compute_calibration_data, compute_quintile_analysis, compute_ic_by_regime
 
 def render_custom_css(themes):
     st.markdown(f"""
@@ -50,6 +51,16 @@ def render_custom_css(themes):
     .metric-value.positive {{ color: var(--accent-green); }}
     .metric-value.negative {{ color: var(--accent-red); }}
     .metric-value.warning {{ color: var(--accent-orange); }}
+    .metric-value.excellent {{ color: var(--accent-green); }}
+    .metric-value.good {{ color: var(--accent-blue); }}
+    .metric-value.marginal {{ color: var(--accent-orange); }}
+    .metric-value.poor {{ color: var(--accent-red); }}
+    .metric-quality {{ font-family: 'IBM Plex Mono', monospace; font-size: 0.6rem; margin-top: 0.25rem; font-weight: 500; }}
+    .metric-quality.excellent {{ color: var(--accent-green); }}
+    .metric-quality.good {{ color: var(--accent-blue); }}
+    .metric-quality.marginal {{ color: var(--accent-orange); }}
+    .metric-quality.poor {{ color: var(--accent-red); }}
+    .metric-quality.neutral {{ color: var(--text-muted); }}
     input {{ color: var(--text-primary) !important; background-color: var(--bg-tertiary) !important; }}
 </style>
 """, unsafe_allow_html=True)
@@ -141,17 +152,107 @@ def render_series_tab(df_full, transform_codes, appendix, driver_attributions, y
         if col in df_full.columns:
             st.plotly_chart(plot_fred_series(df_full[col], col, descriptions.get(col, ""), is_transformed=(mode!="Raw")), width='stretch', key=f"fred_{col}")
 
-def render_prediction_tab(prediction_results, y_live, horizon_months, min_persistence, l1_ratio, confidence_level, X_live):
+def render_prediction_tab(prediction_results, y_live, horizon_months, min_persistence, l1_ratio, confidence_level, X_live, alert_threshold=2.0):
     if prediction_results is None:
         if st.button("📊 Run Prediction Model Validation", type="primary"):
             res, sel, cov = get_historical_backtest(y_live, X_live, 240, horizon_months, 12, min_persistence, l1_ratio, confidence_level)
             st.session_state.engine_results.update({'prediction_results': res, 'prediction_selection': sel, 'coverage_stats': cov})
             save_engine_state(st.session_state.engine_results); st.rerun()
     else:
+        st.markdown('<div class="panel-header">PREDICTION ACCURACY & CALIBRATION</div>', unsafe_allow_html=True)
         asset = st.selectbox("Asset", ['EQUITY', 'BONDS', 'GOLD'])
         oos = prediction_results.get(asset, pd.DataFrame())
+        
         if not oos.empty:
-            st.plotly_chart(plot_backtest(y_live[asset].loc[oos.index], oos['predicted_return'], oos['lower_ci'], oos['upper_ci'], confidence_level), width='stretch', key=f"bt_{asset}")
+            actual = y_live[asset].loc[oos.index]
+            metrics = compute_all_metrics(
+                actual=actual,
+                predicted=oos['predicted_return'],
+                lower_ci=oos['lower_ci'],
+                upper_ci=oos['upper_ci'],
+                nominal_coverage=confidence_level
+            )
+            
+            # Primary Metrics Grid
+            col1, col2, col3, col4 = st.columns(4)
+            
+            primary_metrics = [
+                ('oos_r2', 'OOS R²', 'oos_r2'),
+                ('ic', 'Info. Coefficient', 'ic'),
+                ('hit_rate', 'Hit Rate', 'hit_rate'),
+                ('coverage', f'Coverage ({confidence_level:.0%})', 'coverage')
+            ]
+            
+            for col, (attr, label, metric_key) in zip([col1, col2, col3, col4], primary_metrics):
+                val = getattr(metrics, attr)
+                qual_label, css = get_quality_rating(metric_key, val, confidence_level)
+                col.markdown(f'''
+                    <div class="metric-card">
+                        <div class="metric-label">{label}</div>
+                        <div class="metric-value {css}">{format_metric_value(metric_key, val)}</div>
+                        <div class="metric-quality {css}">● {qual_label}</div>
+                    </div>
+                ''', unsafe_allow_html=True)
+            
+            # Main Backtest Chart
+            st.plotly_chart(plot_backtest(actual, oos['predicted_return'], oos['lower_ci'], oos['upper_ci'], confidence_level), width='stretch', key=f"bt_{asset}")
+            
+            # Secondary Metrics Expander
+            with st.expander("📊 Error Metrics & Significance"):
+                s1, s2, s3, s4, s5 = st.columns(5)
+                sec_metrics = [
+                    ('rmse', 'RMSE', 'rmse'),
+                    ('mae', 'MAE', 'mae'),
+                    ('bias', 'Bias', 'bias'),
+                    ('interval_width', 'Avg Width', 'interval_width'),
+                    ('ic_tstat', 'IC t-stat', 'ic_tstat')
+                ]
+                for col, (attr, label, m_key) in zip([s1, s2, s3, s4, s5], sec_metrics):
+                    val = getattr(metrics, attr)
+                    qual, css = get_quality_rating(m_key, val)
+                    col.metric(label, format_metric_value(m_key, val), delta=qual if m_key=='ic_tstat' else None, delta_color="normal")
+            
+            # Advanced Diagnostics Expander
+            with st.expander("🔬 Model Diagnostics"):
+                d1, d2 = st.columns(2)
+                
+                with d1:
+                    # Rolling IC
+                    roll_ic = compute_rolling_ic(actual, oos['predicted_return'])
+                    fig_ic = go.Figure()
+                    fig_ic.add_trace(go.Scatter(x=roll_ic.index, y=roll_ic, name="Rolling IC (36M)", line=dict(color='#4da6ff')))
+                    fig_ic.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_ic.update_layout(title="Rolling Information Coefficient (36M)", height=350, margin=dict(l=20, r=20, t=40, b=20), template="plotly_dark")
+                    st.plotly_chart(fig_ic, use_container_width=True, key=f"roll_ic_{asset}")
+                    
+                    # Quintile Spread
+                    quintiles = compute_quintile_analysis(actual, oos['predicted_return'])
+                    fig_q = go.Figure(go.Bar(x=quintiles.index, y=quintiles['mean_return'], marker_color='#ff6b35'))
+                    fig_q.update_layout(title="Mean Return by Prediction Quintile", height=350, margin=dict(l=20, r=20, t=40, b=20), template="plotly_dark")
+                    st.plotly_chart(fig_q, use_container_width=True, key=f"quintile_{asset}")
+
+                with d2:
+                    # Calibration Plot
+                    calib = compute_calibration_data(actual, oos['predicted_return'])
+                    fig_cal = go.Figure()
+                    fig_cal.add_trace(go.Scatter(x=calib['predicted'], y=calib['actual'], mode='markers+lines', name="Actual", marker=dict(color='#00d26a')))
+                    # Add 45 degree line
+                    min_val = min(calib['predicted'].min(), calib['actual'].min())
+                    max_val = max(calib['predicted'].max(), calib['actual'].max())
+                    fig_cal.add_trace(go.Scatter(x=[min_val, max_val], y=[min_val, max_val], mode='lines', name="Ideal", line=dict(dash='dash', color='gray')))
+                    fig_cal.update_layout(title="Calibration: Predicted vs Actual", height=350, margin=dict(l=20, r=20, t=40, b=20), template="plotly_dark")
+                    st.plotly_chart(fig_cal, use_container_width=True, key=f"calib_{asset}")
+                    
+                    # IC by Regime
+                    stress_scores = get_historical_stress(X_live.loc[actual.index])
+                    regimes = stress_scores.apply(lambda s: "ALERT" if s > alert_threshold else "WARNING" if s > alert_threshold * 0.6 else "CALM")
+                    ic_regime = compute_ic_by_regime(actual, oos['predicted_return'], regimes)
+                    if not ic_regime.empty:
+                        fig_reg = go.Figure(go.Bar(x=ic_regime['regime'], y=ic_regime['ic'], marker_color='#4da6ff'))
+                        fig_reg.update_layout(title="IC by Market Regime", height=350, margin=dict(l=20, r=20, t=40, b=20), template="plotly_dark")
+                        st.plotly_chart(fig_reg, use_container_width=True, key=f"ic_regime_{asset}")
+                    else:
+                        st.info("Insufficient data for regime-specific IC analysis.")
 
 def render_diagnostics_tab(stress_indicators, stability_results_map, prediction_selection, coverage_stats, descriptions):
     st.markdown("**Regime Indicators**")

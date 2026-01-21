@@ -146,7 +146,7 @@ def main():
         df_full, transform_codes = load_full_fred_md_raw()
         appendix = load_fred_appendix()
         render_series_tab(df_full, transform_codes, appendix, driver_attributions, y_live, descriptions)
-    with tab4: render_prediction_tab(res['prediction_results'], y_live, horizon_months, min_persistence, l1_ratio, confidence_level, X_live)
+    with tab4: render_prediction_tab(res['prediction_results'], y_live, horizon_months, min_persistence, l1_ratio, confidence_level, X_live, alert_thresh)
     with tab5: render_diagnostics_tab(stress_indicators, stability_results_map, res['prediction_selection'], res['coverage_stats'], descriptions)
     with tab6: render_strategy_lab(asset_prices, res['prediction_results'], y_backtest, X_backtest, horizon_months, min_persistence, l1_ratio, confidence_level, macro_data_current, risk_free)
 
