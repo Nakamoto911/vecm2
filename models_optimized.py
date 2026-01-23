@@ -316,7 +316,10 @@ def run_optimized_backtest(
     X_precomputed: pd.DataFrame,
     asset_class: str,
     config: BacktestConfig,
-    progress_callback=None
+    progress_callback=None,
+    y_nominal: pd.Series = None,
+    prices: pd.Series = None,
+    macro_data: pd.DataFrame = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
     """
     Optimized walk-forward backtest.
@@ -353,6 +356,17 @@ def run_optimized_backtest(
 
     dates = X.index
     start_idx = config.min_train_months + config.horizon_months
+
+    # Pre-calculate Sigma and Rf for reconstruction
+    sigma_series = None
+    rf_series = None
+    if prices is not None:
+        # Use pct_change for volatility as per refined spec
+        sigma_series = prices.pct_change().rolling(12).std() * np.sqrt(12)
+        
+    if macro_data is not None and 'FEDFUNDS' in macro_data.columns:
+        # Explicitly force division by 100.0 as per refined spec
+        rf_series = macro_data['FEDFUNDS'] / 100.0
 
     # Pre-compute step schedule
     steps = list(range(start_idx, len(dates), config.rebalance_freq))
@@ -466,13 +480,35 @@ def run_optimized_backtest(
             X_test = X.loc[[pred_date], available_features].fillna(0)
             X_test = X_test.clip(lower=lower, upper=upper, axis=1)
 
-            pred = model.predict(X_test)[0]
-            pred = np.clip(pred, -0.50, 0.50)
+            raw_pred = model.predict(X_test)[0]
+            pred = np.clip(raw_pred, -0.50, 0.50)
 
             lower_ci = pred - margin
             upper_ci = pred + margin
+            
+            # Reconstruction Logic
+            if sigma_series is not None and rf_series is not None:
+                vol = sigma_series.get(pred_date, np.nan)
+                rf = rf_series.get(pred_date, np.nan)
+                if not np.isnan(vol) and not np.isnan(rf):
+                    pred = (pred * vol) + rf
+                    lower_ci = (lower_ci * vol) + rf
+                    upper_ci = (upper_ci * vol) + rf
 
-            actual = y.loc[pred_date]
+            # Calculate actual nominal return if y_nominal not provided
+            if y_nominal is not None:
+                actual = y_nominal.loc[pred_date]
+            elif prices is not None:
+                # Calculate actual nominal return: ln(P_{t+h} / P_t) * (12/h)
+                try:
+                    p_t = prices.loc[pred_date]
+                    p_future_idx = prices.index.get_indexer([pred_date + pd.DateOffset(months=config.horizon_months)], method='pad')[0]
+                    p_future = prices.iloc[p_future_idx]
+                    actual = np.log(p_future / p_t) * (12.0 / config.horizon_months)
+                except:
+                    actual = y.loc[pred_date] # Fallback
+            else:
+                actual = y.loc[pred_date]
 
             # Coverage tracking
             if not np.isnan(actual):
@@ -508,7 +544,10 @@ def run_all_assets_backtest(
     y_all: pd.DataFrame,
     X_precomputed: pd.DataFrame,
     config: BacktestConfig,
-    progress_callback=None
+    progress_callback=None,
+    y_nominal_all: pd.DataFrame = None,
+    prices_all: pd.DataFrame = None,
+    macro_data: pd.DataFrame = None
 ) -> Tuple[Dict, Dict, Dict]:
     """
     Run backtest for all assets with shared preprocessing.
@@ -540,9 +579,12 @@ def run_all_assets_backtest(
             asset_progress = None
 
         y_asset = y_all[asset] if asset in y_all.columns else y_all
+        y_nom_asset = y_nominal_all[asset] if (y_nominal_all is not None and asset in y_nominal_all.columns) else None
+        prices_asset = prices_all[asset] if (prices_all is not None and asset in prices_all.columns) else None
 
         results[asset], selections[asset], coverage[asset] = run_optimized_backtest(
-            y_asset, X_precomputed, asset, config, asset_progress
+            y_asset, X_precomputed, asset, config, asset_progress,
+            y_nominal=y_nom_asset, prices=prices_asset, macro_data=macro_data
         )
 
     return results, selections, coverage

@@ -79,14 +79,42 @@ except ImportError:
     def cache_data_wrapper(func):
         return func
 
-def compute_forward_returns(prices: pd.DataFrame, horizon_months: int = 12) -> pd.DataFrame:
+def compute_forward_returns(prices: pd.DataFrame, horizon_months: int = 12, 
+                            macro_data: pd.DataFrame = None, 
+                            vol_scale: bool = True, 
+                            excess_return: bool = True) -> pd.DataFrame:
     """
-    Compute annualized forward returns for each asset.
+    Compute Volatility-Scaled Excess Return (VSER) for each asset.
+    
+    Target: Z = (R - Rf) / Sigma
+    - R: Annualized forward return
+    - Rf: Risk-free rate (FEDFUNDS) at start of period
+    - Sigma: 12-month rolling annualized volatility at start of period
     """
     log_prices = np.log(prices)
     forward_log_return = log_prices.shift(-horizon_months) - log_prices
     annualized_return = forward_log_return / (horizon_months / 12)
-    return annualized_return
+    
+    target = annualized_return.copy()
+    
+    if excess_return:
+        if macro_data is not None and 'FEDFUNDS' in macro_data.columns:
+            # CRITICAL FIX: Divide by 100 to convert percentage (e.g. 5.25) to decimal (0.0525)
+            # Align Rf with asset price index
+            rf = macro_data['FEDFUNDS'].reindex(prices.index).ffill() / 100.0
+            for col in target.columns:
+                target[col] = target[col] - rf
+        else:
+            print("Warning: FEDFUNDS not found for excess return calculation. Using nominal returns.")
+            
+    if vol_scale:
+        monthly_returns = prices.pct_change()
+        for col in target.columns:
+            # 12-month rolling annualized volatility
+            vol = monthly_returns[col].rolling(12).std() * np.sqrt(12)
+            target[col] = target[col] / vol
+            
+    return target
 
 
 def apply_transformation(series: pd.Series, tcode: int) -> pd.Series:

@@ -83,6 +83,22 @@ def main():
     if macro_data_current.empty or asset_prices.empty:
         st.error("Failed to load required data.")
         return
+        
+    # CRITICAL FIX: Load RAW macro data for VSER reconstruction (Need Levels, not Differences)
+    raw_macro, _ = load_full_fred_md_raw()
+    # ALIGN INDEX: FRED-MD raw data is often Month Start, but asset data is Month End.
+    raw_macro.index = raw_macro.index + pd.offsets.MonthEnd(0)
+    
+    # Create a specialized dataframe for the VSER logic that guarantees FEDFUNDS is a Level
+    vser_macro_data = macro_data_current.copy()
+    if 'FEDFUNDS' in raw_macro.columns:
+        # Reindex to ensure alignment
+        vser_macro_data['FEDFUNDS'] = raw_macro['FEDFUNDS'].reindex(vser_macro_data.index).ffill()
+        
+    # Sanity check printed for audit
+    if 'FEDFUNDS' in vser_macro_data.columns:
+        last_ff = vser_macro_data['FEDFUNDS'].iloc[-1]
+        # print(f"AUDIT | Current FEDFUNDS Level: {last_ff}")
     
     # Optimized Data Path: Use Precomputed Features
     X_precomputed = load_precomputed_features()
@@ -90,11 +106,12 @@ def main():
         st.error("Run `python precompute_pit.py` first")
         st.stop()
     
-    y_forward = compute_forward_returns(asset_prices, horizon_months=horizon_months)
+    y_vser = compute_forward_returns(asset_prices, horizon_months=horizon_months, macro_data=vser_macro_data)
+    y_nominal = compute_forward_returns(asset_prices, horizon_months=horizon_months, vol_scale=False, excess_return=False)
     
     # Align for live prediction & backtest
-    valid_idx = X_precomputed.index.intersection(y_forward.index)
-    X_live, y_live = X_precomputed.loc[valid_idx], y_forward.loc[valid_idx]
+    valid_idx = X_precomputed.index.intersection(y_vser.index)
+    X_live, y_live = X_precomputed.loc[valid_idx], y_vser.loc[valid_idx]
     
     # Legacy compatibility for Lab tab
     X_backtest, y_backtest = X_live, y_live
@@ -109,12 +126,16 @@ def main():
         with st.status("🚀 Running Optimized Alpha Engine...", expanded=True) as status:
             st.write("Generating live signals...")
             expected_returns, confidence_intervals, driver_attributions, stability_results_map, model_stats = get_live_model_signals_v4(
-                y_live, X_live, l1_ratio, min_persistence, est_window, horizon_months, confidence_level=confidence_level
+                y_live, X_live, l1_ratio, min_persistence, est_window, horizon_months, 
+                confidence_level=confidence_level, prices=asset_prices, macro_data=vser_macro_data
             )
             
             st.write("Executing optimized backtest...")
             config = BacktestConfig(min_train_months=240, horizon_months=horizon_months)
-            results, selections, coverage = run_all_assets_backtest(y_forward, X_precomputed, config)
+            results, selections, coverage = run_all_assets_backtest(
+                y_vser, X_precomputed, config,
+                y_nominal_all=y_nominal, prices_all=asset_prices, macro_data=vser_macro_data
+            )
             
             st.session_state.engine_results = {
                 'expected_returns': expected_returns, 'confidence_intervals': confidence_intervals,
@@ -141,12 +162,12 @@ def main():
     # Dashboard Tabs
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["ALLOCATION", "STABLE DRIVERS", "SERIES", "PREDICTION", "DIAGNOSTIC", "BACKTEST"])
     with tab1: render_allocation_tab(horizon_months, expected_returns, confidence_intervals, y_live, target_weights, regime_status, driver_attributions, confidence_level)
-    with tab2: render_drivers_tab(min_persistence, model_stats, driver_attributions, stability_results_map, X_live, y_forward, descriptions, horizon_months)
+    with tab2: render_drivers_tab(min_persistence, model_stats, driver_attributions, stability_results_map, X_live, y_vser, descriptions, horizon_months)
     with tab3: 
         df_full, transform_codes = load_full_fred_md_raw()
         appendix = load_fred_appendix()
         render_series_tab(df_full, transform_codes, appendix, driver_attributions, y_live, descriptions)
-    with tab4: render_prediction_tab(res['prediction_results'], y_live, horizon_months, min_persistence, l1_ratio, confidence_level, X_live, alert_thresh)
+    with tab4: render_prediction_tab(res['prediction_results'], y_live, horizon_months, min_persistence, l1_ratio, confidence_level, X_live, asset_prices, macro_data_current, alert_thresh, y_nominal_live=y_nominal, model_stats=res['model_stats'])
     with tab5: render_diagnostics_tab(stress_indicators, stability_results_map, res['prediction_selection'], res['coverage_stats'], descriptions)
     with tab6: render_strategy_lab(asset_prices, res['prediction_results'], y_backtest, X_backtest, horizon_months, min_persistence, l1_ratio, confidence_level, macro_data_current, risk_free)
 

@@ -251,7 +251,27 @@ def compute_ic_by_regime(actual: pd.Series, predicted: pd.Series, regime: pd.Ser
             results.append({'regime': r, 'ic': ic, 'n_obs': mask.sum()})
     return pd.DataFrame(results)
 
-def generate_llm_report(prediction_results: Dict[str, pd.DataFrame], y_live: pd.DataFrame, confidence_level: float) -> str:
+def construct_model_summary(asset: str, model_stats: dict) -> str:
+    """Construct a summary of the model for a given asset."""
+    if asset not in model_stats: return "Model details not available."
+    m_info = model_stats[asset]; model = m_info.get('model')
+    if asset == 'EQUITY' or "XGB" in str(type(model)):
+        importance = m_info.get('importance', pd.Series())
+        if importance.empty: return "Non-linear Ensemble (XGBoost)."
+        summary = "**Architecture: XGBoost**\n\nTop Drivers:\n"
+        for feat, imp in importance.sort_values(ascending=False).head(5).items(): summary += f"- {feat}: `{imp:.4f}`\n"
+        return summary
+    else:
+        coefs = m_info.get('coefficients', pd.Series())
+        if coefs.empty: return "Linear Model."
+        arch = "ElasticNet" if asset == 'BONDS' else "OLS"
+        res = f"**Architecture: {arch}**\n\nEq: `{m_info.get('intercept', 0):.4f}`"
+        for feat, val in coefs[coefs.abs() > 1e-6].items():
+            if feat == 'const': continue
+            res += f" {'+' if val >= 0 else '-'} (`{abs(val):.4f}` * {feat})"
+        return res
+
+def generate_llm_report(prediction_results: Dict[str, pd.DataFrame], y_live: pd.DataFrame, confidence_level: float, model_stats: Optional[Dict] = None) -> str:
     """
     Generate a comprehensive Markdown report for LLM analysis.
     """
@@ -273,6 +293,12 @@ def generate_llm_report(prediction_results: Dict[str, pd.DataFrame], y_live: pd.
         )
         
         report += f"## ASSET: {asset}\n"
+        
+        # Model Architecture Section
+        if model_stats:
+            report += f"### Model Specification\n"
+            report += f"{construct_model_summary(asset, model_stats)}\n\n"
+
         report += f"### Primary Metrics\n"
         report += f"- **OOS R²:** {format_metric_value('oos_r2', metrics.oos_r2)} ({get_quality_rating('oos_r2', metrics.oos_r2)[0]})\n"
         report += f"- **Information Coefficient (IC):** {format_metric_value('ic', metrics.ic)} ({get_quality_rating('ic', metrics.ic)[0]})\n"

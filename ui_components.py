@@ -16,7 +16,7 @@ from viz_utils import (
 from models import get_historical_backtest, get_historical_stress
 from data_utils import apply_transformation
 from backtester import StrategyBacktester
-from prediction_metrics import compute_all_metrics, get_quality_rating, format_metric_value, compute_rolling_ic, compute_calibration_data, compute_quintile_analysis, compute_ic_by_regime, generate_llm_report
+from prediction_metrics import compute_all_metrics, get_quality_rating, format_metric_value, compute_rolling_ic, compute_calibration_data, compute_quintile_analysis, compute_ic_by_regime, generate_llm_report, construct_model_summary
 
 def render_custom_css(themes):
     st.markdown(f"""
@@ -79,24 +79,7 @@ def generate_narrative(expected_returns, driver_attributions, regime_status):
     regime_note = {'CALM': 'Stable regime.', 'WARNING': 'Elevated stress.', 'ALERT': 'High stress positioning.'}.get(regime_status, '')
     return '  \n'.join(narratives) + f'  \n\n{regime_note}'
 
-def construct_model_summary(asset: str, model_stats: dict) -> str:
-    if asset not in model_stats: return "Model details not available."
-    m_info = model_stats[asset]; model = m_info.get('model')
-    if asset == 'EQUITY' or "XGB" in str(type(model)):
-        importance = m_info.get('importance', pd.Series())
-        if importance.empty: return "Non-linear Ensemble (XGBoost)."
-        summary = "**Architecture: XGBoost**\n\nTop Drivers:\n"
-        for feat, imp in importance.sort_values(ascending=False).head(5).items(): summary += f"- {feat}: `{imp:.4f}`\n"
-        return summary
-    else:
-        coefs = m_info.get('coefficients', pd.Series())
-        if coefs.empty: return "Linear Model."
-        arch = "ElasticNet" if asset == 'BONDS' else "OLS"
-        res = f"**Architecture: {arch}**\n\nEq: `{m_info.get('intercept', 0):.4f}`"
-        for feat, val in coefs[coefs.abs() > 1e-6].items():
-            if feat == 'const': continue
-            res += f" {'+' if val >= 0 else '-'} (`{abs(val):.4f}` * {feat})"
-        return res
+
 
 def render_allocation_tab(horizon_months, expected_returns, confidence_intervals, y_live, target_weights, regime_status, driver_attributions, confidence_level):
     st.markdown(f'<div class="panel-header">EXPECTED {horizon_months}M RETURNS & STRATEGIC POSITIONING</div>', unsafe_allow_html=True)
@@ -152,10 +135,10 @@ def render_series_tab(df_full, transform_codes, appendix, driver_attributions, y
         if col in df_full.columns:
             st.plotly_chart(plot_fred_series(df_full[col], col, descriptions.get(col, ""), is_transformed=(mode!="Raw")), width='stretch', key=f"fred_{col}")
 
-def render_prediction_tab(prediction_results, y_live, horizon_months, min_persistence, l1_ratio, confidence_level, X_live, alert_threshold=2.0):
+def render_prediction_tab(prediction_results, y_live, horizon_months, min_persistence, l1_ratio, confidence_level, X_live, asset_prices=None, macro_data_current=None, alert_threshold=2.0, y_nominal_live=None, model_stats=None):
     if prediction_results is None:
         if st.button("📊 Run Prediction Model Validation", type="primary"):
-            res, sel, cov = get_historical_backtest(y_live, X_live, 240, horizon_months, 12, min_persistence, l1_ratio, confidence_level)
+            res, sel, cov = get_historical_backtest(y_live, X_live, 240, horizon_months, 12, min_persistence, l1_ratio, confidence_level, prices=asset_prices, macro_data=macro_data_current)
             st.session_state.engine_results.update({'prediction_results': res, 'prediction_selection': sel, 'coverage_stats': cov})
             save_engine_state(st.session_state.engine_results); st.rerun()
     else:
@@ -166,7 +149,7 @@ def render_prediction_tab(prediction_results, y_live, horizon_months, min_persis
             st.markdown("---")
             st.markdown('<div style="color: #00d26a; font-family: monospace; font-size: 0.8rem;">SHARE TO LLM</div>', unsafe_allow_html=True)
             if st.button("📋 Copy Prediction Report", use_container_width=True, type="secondary"):
-                report_md = generate_llm_report(prediction_results, y_live, confidence_level)
+                report_md = generate_llm_report(prediction_results, y_live, confidence_level, model_stats)
                 st.session_state.llm_report = report_md
                 st.toast("Report generated! See below.")
 
@@ -188,7 +171,11 @@ def render_prediction_tab(prediction_results, y_live, horizon_months, min_persis
         oos = prediction_results.get(asset, pd.DataFrame())
         
         if not oos.empty:
-            actual = y_live[asset].loc[oos.index]
+            # CRITICAL FIX: Use Nominal Returns for "Actual" plotting if provided
+            if y_nominal_live is not None and asset in y_nominal_live.columns:
+                actual = y_nominal_live[asset].loc[oos.index]
+            else:
+                actual = y_live[asset].loc[oos.index]
             metrics = compute_all_metrics(
                 actual=actual,
                 predicted=oos['predicted_return'],
@@ -296,7 +283,7 @@ def render_strategy_lab(asset_prices, prediction_results, y_backtest, X_backtest
         submitted = st.form_submit_button("🚀 RUN SIMULATION")
         if submitted:
             if st.session_state.engine_results.get('backtest_results') is None:
-                res, sel, cov = get_historical_backtest(y_backtest, X_backtest, 240, horizon_months, 12, min_persistence, l1_ratio, confidence_level)
+                res, sel, cov = get_historical_backtest(y_backtest, X_backtest, 240, horizon_months, 12, min_persistence, l1_ratio, confidence_level, prices=asset_prices, macro_data=macro_data_current)
                 st.session_state.engine_results.update({'backtest_results': res, 'backtest_selection': sel, 'coverage_stats': cov})
                 save_engine_state(st.session_state.engine_results); st.rerun()
             results = st.session_state.engine_results['backtest_results']

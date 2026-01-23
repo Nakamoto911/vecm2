@@ -109,7 +109,8 @@ def _perform_feature_selection_step(current_date, y, X_expanded_global, horizon_
     return current_date, cached_features, selector.selector.best_alpha_, selector.selector.best_l1_ratio_
 
 def _perform_prediction_step(current_date, predict_idx, y, X_expanded_global, horizon_months, 
-                           stable_feats, best_alpha, best_l1, asset_class, confidence_level):
+                           stable_feats, best_alpha, best_l1, asset_class, confidence_level,
+                           sigma_series=None, rf_series=None):
     """Helper for parallel prediction."""
     train_limit = current_date - pd.DateOffset(months=horizon_months)
     mask_train = X_expanded_global.index <= train_limit
@@ -159,6 +160,20 @@ def _perform_prediction_step(current_date, predict_idx, y, X_expanded_global, ho
 
         raw_preds = np.clip(raw_preds, -0.50, 0.50)
         
+        # Reconstruction Logic: Convert scaled excess return back to nominal
+        if sigma_series is not None and rf_series is not None:
+            # Identify indices that exist in both
+            common_idx = X_test_final.index.intersection(sigma_series.index).intersection(rf_series.index)
+            if not common_idx.empty:
+                vols = sigma_series.loc[common_idx].values
+                rfs = rf_series.loc[common_idx].values
+                
+                # Align raw_preds with common_idx if necessary
+                # Since X_test_final.index is what we predict for, we use its mapping
+                raw_preds = (raw_preds * vols) + rfs
+                lower_ci = (lower_ci * vols) + rfs
+                upper_ci = (upper_ci * vols) + rfs
+        
     return current_date, X_test_final.index, raw_preds, lower_ci, upper_ci
 
 def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame, 
@@ -170,7 +185,10 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
                               l1_ratio: float = 0.5,
                               confidence_level: float = 0.90,
                               progress_cb=None,
-                              X_precomputed: pd.DataFrame = None) -> tuple:
+                              X_precomputed: pd.DataFrame = None,
+                              y_nominal: pd.Series = None,
+                              prices: pd.Series = None,
+                              macro_data: pd.DataFrame = None) -> tuple:
     """Researcher-Grade Optimized Backtester with Parallel Execution."""
     results = []
     selection_history = []
@@ -201,6 +219,18 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
     X_expanded_global = X_expanded_global.loc[common_calc]
     y = y.loc[common_calc]
     dates = X_expanded_global.index
+
+    # Pre-calculate Sigma and Rf for reconstruction if prices/macro provided
+    sigma_series = None
+    rf_series = None
+    if prices is not None:
+        # Use pct_change for volatility as per refined spec
+        sigma_series = prices.pct_change().rolling(12).std() * np.sqrt(12)
+        sigma_series = sigma_series.astype('float32')
+        
+    if macro_data is not None and 'FEDFUNDS' in macro_data.columns:
+        # Explicitly force division by 100.0 as per refined spec
+        rf_series = (macro_data['FEDFUNDS'] / 100.0).astype('float32')
 
     # 1. Plan Execution Steps
     steps = list(range(start_idx, len(dates), rebalance_freq))
@@ -262,7 +292,8 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
             feature_cache[step['sel_date']]['features'],
             feature_cache[step['sel_date']]['alpha'],
             feature_cache[step['sel_date']]['l1'],
-            asset_class, confidence_level
+            asset_class, confidence_level,
+            sigma_series, rf_series
         )
         for step in step_map
     )
@@ -280,7 +311,21 @@ def run_walk_forward_backtest(y: pd.Series, X: pd.DataFrame,
         pred_vals = pd.Series(raw_preds, index=idxs)
         for i, date in enumerate(idxs):
             if date in y.index:
-                actual_ret = y.loc[date]
+                # Use nominal y for evaluation if available, or recalculate from prices
+                if y_nominal is not None:
+                    actual_ret = y_nominal.loc[date]
+                elif prices is not None:
+                    # Calculate actual nominal return: ln(P_{t+h} / P_t) * (12/h)
+                    try:
+                        p_t = prices.loc[date]
+                        p_future_idx = prices.index.get_indexer([date + pd.DateOffset(months=horizon_months)], method='pad')[0]
+                        p_future = prices.iloc[p_future_idx]
+                        actual_ret = np.log(p_future / p_t) * (12.0 / horizon_months)
+                    except:
+                        actual_ret = y.loc[date] # Fallback
+                else:
+                    actual_ret = y.loc[date]
+                    
                 val = pred_vals.loc[date]
                 l = l_ci[i] if isinstance(l_ci, (list, np.ndarray)) else l_ci
                 u = u_ci[i] if isinstance(u_ci, (list, np.ndarray)) else u_ci
@@ -464,7 +509,7 @@ def get_precomputed_macro_data(X: pd.DataFrame, drivers: list, min_history: int 
     MANUAL_MACRO_CACHE[cache_key] = X_expanded
     return X_expanded
 
-def get_historical_backtest(y, X, min_train_months, horizon_months, rebalance_freq, selection_threshold, l1_ratio, confidence_level=0.90):
+def get_historical_backtest(y, X, min_train_months, horizon_months, rebalance_freq, selection_threshold, l1_ratio, confidence_level=0.90, prices=None, macro_data=None):
     results, heatmaps, coverage = {}, {}, {}
     start_time = time.time()
     
@@ -496,7 +541,13 @@ def get_historical_backtest(y, X, min_train_months, horizon_months, rebalance_fr
                     progress_bar.progress(min(0.99, 0.15 + (a_idx + pct_inner) / 3 * 0.85))
                     status_msg.markdown(f"**Step {a_idx+2}/4**: {asset} | {step_name} | {current_date.strftime('%b %Y')}")
                 
-                oos_df, sel_df, coverage_stats = run_walk_forward_backtest(y[asset], X, min_train_months, horizon_months, rebalance_freq, asset, selection_threshold, l1_ratio, confidence_level, update_progress, X_precomputed)
+                prices_asset = prices[asset] if prices is not None and asset in prices.columns else None
+                y_nominal_asset = None
+                if prices_asset is not None:
+                    log_p = np.log(prices_asset)
+                    y_nominal_asset = (log_p.shift(-horizon_months) - log_p) * (12.0 / horizon_months)
+
+                oos_df, sel_df, coverage_stats = run_walk_forward_backtest(y[asset], X, min_train_months, horizon_months, rebalance_freq, asset, selection_threshold, l1_ratio, confidence_level, update_progress, X_precomputed, y_nominal=y_nominal_asset, prices=prices_asset, macro_data=macro_data)
                 results[asset], heatmaps[asset], coverage[asset] = oos_df, sel_df, coverage_stats
                 
             status.update(label="✅ Complete", state="complete", expanded=False)
@@ -506,7 +557,8 @@ def get_historical_backtest(y, X, min_train_months, horizon_months, rebalance_fr
             
     return results, heatmaps, coverage
 
-def get_live_model_signals_v4(y, X, l1_ratio, selection_threshold, window_years, horizon_months, confidence_level=0.90):
+def get_live_model_signals_v4(y, X, l1_ratio, selection_threshold, window_years, horizon_months, 
+                              confidence_level=0.90, prices=None, macro_data=None):
     expected_returns, confidence_intervals, driver_attributions, stability_results_map, model_stats = {}, {}, {}, {}, {}
     for asset in ['EQUITY', 'BONDS', 'GOLD']:
         stab_results = stability_analysis(y[asset], X, horizon_months, window_years)
@@ -514,6 +566,15 @@ def get_live_model_signals_v4(y, X, l1_ratio, selection_threshold, window_years,
         stable_features = metrics[metrics['persistence'] >= selection_threshold].sort_values('persistence', ascending=False)['feature'].tolist()
         if not stable_features: stable_features = X.columns[:5].tolist()
         y_valid, X_valid = y[asset].loc[X.index].dropna(), X.loc[y[asset].dropna().index]
+        if X_valid.empty or not stable_features:
+            # Fallback if no data or features
+            expected_returns[asset] = 0.05
+            confidence_intervals[asset] = [0.0, 0.10]
+            driver_attributions[asset] = pd.DataFrame()
+            stability_results_map[asset] = {}
+            model_stats[asset] = {}
+            continue
+            
         X_sel = X_valid[stable_features]
         if asset in ['BONDS', 'GOLD']:
             hac_results = estimate_with_corrected_inference(y_valid, X_sel, {'inference_method': st.session_state.get('inference_method', 'Hodrick (1992)'), 'horizon': horizon_months})
@@ -523,9 +584,25 @@ def get_live_model_signals_v4(y, X, l1_ratio, selection_threshold, window_years,
             m = XGBRegressor(n_estimators=50, max_depth=3, learning_rate=0.05); m.fit(X_sel, y_valid)
             exp_ret = m.predict(X_sel.iloc[[-1]])[0]
             bt = BootstrapPredictionInterval(confidence_level=confidence_level, n_bootstrap=20); bt.fit(m, X_sel, y_valid)
-            _, lower, upper = bt.predict_interval(X_sel.iloc[[-1]])
+            _preds, lower, upper = bt.predict_interval(X_sel.iloc[[-1]])
+            # Ensure lower/upper are scalar
+            lower = lower[0] if hasattr(lower, "__len__") else lower
+            upper = upper[0] if hasattr(upper, "__len__") else upper
             hac_results = {'model': m, 'importance': pd.Series(m.feature_importances_, index=stable_features)}
-        expected_returns[asset], confidence_intervals[asset] = exp_ret, [lower[0] if isinstance(lower, np.ndarray) else lower, upper[0] if isinstance(upper, np.ndarray) else upper]
+        
+        # VSER Reconstruction Logic for live signal
+        if prices is not None and asset in prices.columns and macro_data is not None and 'FEDFUNDS' in macro_data.columns:
+            # Latest Volatility (12-month rolling) - Use pct_change as per spec
+            asset_prices = prices[asset]
+            latest_sigma = (asset_prices.pct_change().rolling(12).std() * np.sqrt(12)).iloc[-1]
+            # Latest Risk-Free Rate - Explicitly divide by 100.0
+            latest_rf = macro_data['FEDFUNDS'].iloc[-1] / 100.0
+            
+            exp_ret = (exp_ret * latest_sigma) + latest_rf
+            lower = (lower[0] if isinstance(lower, np.ndarray) else lower) * latest_sigma + latest_rf
+            upper = (upper[0] if isinstance(upper, np.ndarray) else upper) * latest_sigma + latest_rf
+            
+        expected_returns[asset], confidence_intervals[asset] = exp_ret, [lower, upper]
         driver_attributions[asset] = compute_driver_attribution(X_sel.iloc[-1], hac_results.get('coefficients', hac_results.get('importance', pd.Series())), X_sel.mean())
         # Add Impact and other columns for UI compatibility
         attr = driver_attributions[asset]
