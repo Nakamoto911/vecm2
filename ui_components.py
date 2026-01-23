@@ -148,7 +148,7 @@ def render_prediction_tab(prediction_results, y_live, horizon_months, min_persis
         with st.sidebar:
             st.markdown("---")
             st.markdown('<div style="color: #00d26a; font-family: monospace; font-size: 0.8rem;">SHARE TO LLM</div>', unsafe_allow_html=True)
-            if st.button("📋 Copy Prediction Report", use_container_width=True, type="secondary"):
+            if st.button("📋 Copy Prediction Report", width='stretch', type="secondary"):
                 report_md = generate_llm_report(prediction_results, y_live, confidence_level, model_stats, y_nominal=y_nominal_live)
                 st.session_state.llm_report = report_md
                 st.toast("Report generated! See below.")
@@ -234,13 +234,13 @@ def render_prediction_tab(prediction_results, y_live, horizon_months, min_persis
                     fig_ic.add_trace(go.Scatter(x=roll_ic.index, y=roll_ic, name="Rolling IC (36M)", line=dict(color='#4da6ff')))
                     fig_ic.add_hline(y=0, line_dash="dash", line_color="gray")
                     fig_ic.update_layout(title="Rolling Information Coefficient (36M)", height=350, margin=dict(l=20, r=20, t=40, b=20), template="plotly_dark")
-                    st.plotly_chart(fig_ic, use_container_width=True, key=f"roll_ic_{asset}")
+                    st.plotly_chart(fig_ic, width='stretch', key=f"roll_ic_{asset}")
                     
                     # Quintile Spread
                     quintiles = compute_quintile_analysis(actual, oos['predicted_return'])
                     fig_q = go.Figure(go.Bar(x=quintiles.index, y=quintiles['mean_return'], marker_color='#ff6b35'))
                     fig_q.update_layout(title="Mean Return by Prediction Quintile", height=350, margin=dict(l=20, r=20, t=40, b=20), template="plotly_dark")
-                    st.plotly_chart(fig_q, use_container_width=True, key=f"quintile_{asset}")
+                    st.plotly_chart(fig_q, width='stretch', key=f"quintile_{asset}")
 
                 with d2:
                     # Calibration Plot
@@ -252,7 +252,7 @@ def render_prediction_tab(prediction_results, y_live, horizon_months, min_persis
                     max_val = max(calib['predicted'].max(), calib['actual'].max())
                     fig_cal.add_trace(go.Scatter(x=[min_val, max_val], y=[min_val, max_val], mode='lines', name="Ideal", line=dict(dash='dash', color='gray')))
                     fig_cal.update_layout(title="Calibration: Predicted vs Actual", height=350, margin=dict(l=20, r=20, t=40, b=20), template="plotly_dark")
-                    st.plotly_chart(fig_cal, use_container_width=True, key=f"calib_{asset}")
+                    st.plotly_chart(fig_cal, width='stretch', key=f"calib_{asset}")
                     
                     # IC by Regime
                     stress_scores = get_historical_stress(X_live.loc[actual.index])
@@ -261,7 +261,7 @@ def render_prediction_tab(prediction_results, y_live, horizon_months, min_persis
                     if not ic_regime.empty:
                         fig_reg = go.Figure(go.Bar(x=ic_regime['regime'], y=ic_regime['ic'], marker_color='#4da6ff'))
                         fig_reg.update_layout(title="IC by Market Regime", height=350, margin=dict(l=20, r=20, t=40, b=20), template="plotly_dark")
-                        st.plotly_chart(fig_reg, use_container_width=True, key=f"ic_regime_{asset}")
+                        st.plotly_chart(fig_reg, width='stretch', key=f"ic_regime_{asset}")
                     else:
                         st.info("Insufficient data for regime-specific IC analysis.")
 
