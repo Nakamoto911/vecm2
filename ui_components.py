@@ -16,7 +16,7 @@ from viz_utils import (
 from models import get_historical_backtest, get_historical_stress
 from data_utils import apply_transformation
 from backtester import StrategyBacktester
-from prediction_metrics import compute_all_metrics, get_quality_rating, format_metric_value, compute_rolling_ic, compute_calibration_data, compute_quintile_analysis, compute_ic_by_regime
+from prediction_metrics import compute_all_metrics, get_quality_rating, format_metric_value, compute_rolling_ic, compute_calibration_data, compute_quintile_analysis, compute_ic_by_regime, generate_llm_report
 
 def render_custom_css(themes):
     st.markdown(f"""
@@ -160,6 +160,30 @@ def render_prediction_tab(prediction_results, y_live, horizon_months, min_persis
             save_engine_state(st.session_state.engine_results); st.rerun()
     else:
         st.markdown('<div class="panel-header">PREDICTION ACCURACY & CALIBRATION</div>', unsafe_allow_html=True)
+        
+        # LLM Export Section
+        with st.sidebar:
+            st.markdown("---")
+            st.markdown('<div style="color: #00d26a; font-family: monospace; font-size: 0.8rem;">SHARE TO LLM</div>', unsafe_allow_html=True)
+            if st.button("📋 Copy Prediction Report", use_container_width=True, type="secondary"):
+                report_md = generate_llm_report(prediction_results, y_live, confidence_level)
+                st.session_state.llm_report = report_md
+                st.toast("Report generated! See below.")
+
+        if 'llm_report' in st.session_state:
+            with st.expander("📝 LLM-FRIENDLY REPORT", expanded=True):
+                st.markdown("Copy the content below to share with your LLM:")
+                st.code(st.session_state.llm_report, language="markdown")
+                st.download_button(
+                    label="📥 Download Markdown Report",
+                    data=st.session_state.llm_report,
+                    file_name="macro_model_report.md",
+                    mime="text/markdown"
+                )
+                if st.button("Close Report"):
+                    del st.session_state.llm_report
+                    st.rerun()
+
         asset = st.selectbox("Asset", ['EQUITY', 'BONDS', 'GOLD'])
         oos = prediction_results.get(asset, pd.DataFrame())
         

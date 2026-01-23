@@ -250,3 +250,56 @@ def compute_ic_by_regime(actual: pd.Series, predicted: pd.Series, regime: pd.Ser
             ic, _ = spearmanr(df.loc[mask, 'actual'], df.loc[mask, 'predicted'])
             results.append({'regime': r, 'ic': ic, 'n_obs': mask.sum()})
     return pd.DataFrame(results)
+
+def generate_llm_report(prediction_results: Dict[str, pd.DataFrame], y_live: pd.DataFrame, confidence_level: float) -> str:
+    """
+    Generate a comprehensive Markdown report for LLM analysis.
+    """
+    report = "# MODEL OUT-OF-SAMPLE PERFORMANCE REPORT\n\n"
+    report += f"**Horizon:** {y_live.columns[0] if not y_live.empty else 'Unknown'} (Backtested)\n"
+    report += f"**Confidence Level:** {confidence_level:.0%}\n\n"
+    
+    for asset, oos in prediction_results.items():
+        if oos.empty or asset not in y_live.columns:
+            continue
+            
+        actual = y_live[asset].loc[oos.index]
+        metrics = compute_all_metrics(
+            actual=actual,
+            predicted=oos['predicted_return'],
+            lower_ci=oos['lower_ci'],
+            upper_ci=oos['upper_ci'],
+            nominal_coverage=confidence_level
+        )
+        
+        report += f"## ASSET: {asset}\n"
+        report += f"### Primary Metrics\n"
+        report += f"- **OOS R²:** {format_metric_value('oos_r2', metrics.oos_r2)} ({get_quality_rating('oos_r2', metrics.oos_r2)[0]})\n"
+        report += f"- **Information Coefficient (IC):** {format_metric_value('ic', metrics.ic)} ({get_quality_rating('ic', metrics.ic)[0]})\n"
+        report += f"- **Hit Rate:** {format_metric_value('hit_rate', metrics.hit_rate)} ({get_quality_rating('hit_rate', metrics.hit_rate)[0]})\n"
+        report += f"- **Coverage ({confidence_level:.0%}):** {format_metric_value('coverage', metrics.coverage)} ({get_quality_rating('coverage', metrics.coverage, confidence_level)[0]})\n\n"
+        
+        report += f"### Secondary Metrics\n"
+        report += f"- **RMSE:** {format_metric_value('rmse', metrics.rmse)}\n"
+        report += f"- **MAE:** {format_metric_value('mae', metrics.mae)}\n"
+        report += f"- **Bias:** {format_metric_value('bias', metrics.bias)}\n"
+        report += f"- **Avg Interval Width:** {format_metric_value('interval_width', metrics.interval_width)}\n"
+        report += f"- **IC t-stat:** {format_metric_value('ic_tstat', metrics.ic_tstat)} ({get_quality_rating('ic_tstat', metrics.ic_tstat)[0]})\n"
+        report += f"- **Observations:** {metrics.n_observations}\n\n"
+        
+        # Add a small summary of recent performance if possible
+        if len(oos) >= 12:
+            recent = oos.tail(12)
+            recent_actual = actual.tail(12)
+            recent_hit_rate = (np.sign(recent['predicted_return']) == np.sign(recent_actual)).mean()
+            report += f"### Recent 12-Month Momentum\n"
+            report += f"- **Recent Hit Rate:** {recent_hit_rate:.1%}\n"
+            report += f"- **Latest Prediction:** {oos['predicted_return'].iloc[-1]:.1%}\n\n"
+            
+        report += "---\n\n"
+    
+    report += "### SYSTEM SUMMARY\n"
+    report += "This report contains out-of-sample (walk-forward) validation results for the macro returns forecasting system. "
+    report += "Metrics are calculated using sliding window walk-forward validation to ensure no look-ahead bias."
+    
+    return report
